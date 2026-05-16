@@ -1,10 +1,25 @@
-// libaimgui_helper.so — loaded by the Java helper to kick libbinder's
-// thread pool from native code, sidestepping every Java-side gate.
-#include <android/dlext.h>
+// libaimgui_helper.so — start libbinder's worker thread pool from native
+// code, even when the linker namespace forbids us from dlopen()ing it.
+//
+// On modern Android the Java helper runs in linker namespace "clns-1"
+// whose permitted_paths are /data:/mnt/expand only. libbinder.so lives
+// at /system/lib64/libbinder.so, in a separate namespace ("default"), so
+//   dlopen("libbinder.so")                 → DENIED (namespace path)
+//   dlsym(RTLD_DEFAULT, "ProcessState…")   → null  (different namespace)
+//   android_dlopen_ext with ns="default"   → libdl's extension symbols
+//                                             are also filtered out
+//
+// The library IS already loaded into the process (the JVM links it for
+// Binder support); dl_iterate_phdr exposes its base address. So instead
+// of going through the dynamic linker, we walk libbinder's PT_DYNAMIC →
+// SYMTAB / GNU_HASH directly and resolve ProcessState::self /
+// startThreadPool ourselves. No linker machinery, no namespace gate.
 #include <android/log.h>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <dlfcn.h>
+#include <elf.h>
 #include <jni.h>
 #include <link.h>
 
@@ -12,121 +27,131 @@
 #define LOGI(fmt, ...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, "[boot] " fmt, ##__VA_ARGS__)
 #define LOGW(fmt, ...) __android_log_print(ANDROID_LOG_WARN,  LOG_TAG, "[boot] " fmt, ##__VA_ARGS__)
 
-// ProcessState::self() returns sp<ProcessState>; on AArch64 the underlying
-// pointer is the return value, so we treat it as a `void*` and pass it as
-// `this` to startThreadPool().
 static constexpr const char kSelfSym[]  = "_ZN7android12ProcessState4selfEv";
 static constexpr const char kStartSym[] = "_ZN7android12ProcessState15startThreadPoolEv";
 
-static constexpr const char* kGetNsNames[] = {
-    "android_get_exported_namespace",
-    "__loader_android_get_exported_namespace",
-    nullptr,
-};
-static constexpr const char* kDlopenExtNames[] = {
-    "android_dlopen_ext",
-    "__loader_android_dlopen_ext",
-    nullptr,
+#if __LP64__
+using ElfSym  = Elf64_Sym;
+using ElfPhdr = Elf64_Phdr;
+using ElfDyn  = Elf64_Dyn;
+using ElfWord = uint64_t;
+#else
+using ElfSym  = Elf32_Sym;
+using ElfPhdr = Elf32_Phdr;
+using ElfDyn  = Elf32_Dyn;
+using ElfWord = uint32_t;
+#endif
+
+struct ParsedLib {
+    uintptr_t        base     = 0;
+    const ElfSym*    symtab   = nullptr;
+    const char*      strtab   = nullptr;
+    const uint32_t*  gnu_hash = nullptr;
 };
 
-using get_ns_t      = struct android_namespace_t* (*)(const char*);
-using dlopen_ext_t  = void* (*)(const char*, int, const android_dlextinfo*);
-
-// dlsym across (RTLD_DEFAULT, libdl_handle) for each candidate name.
-// RTLD_DEFAULT is literally ((void*)0) on bionic, so the earlier
-// "for (handles[i]; ...)" loop never iterated — explicit here.
-static void* find_sym(void* libdl, const char* const* names, const char* what) {
-    for (const char* const* n = names; *n; ++n) {
-        if (void* p = dlsym(RTLD_DEFAULT, *n)) {
-            LOGI("resolved %s as %s via RTLD_DEFAULT", what, *n);
-            return p;
-        }
-        if (libdl) {
-            if (void* p = dlsym(libdl, *n)) {
-                LOGI("resolved %s as %s via libdl handle", what, *n);
-                return p;
-            }
+static bool parse_lib(uintptr_t base, const ElfPhdr* phdrs, int phnum, ParsedLib* out) {
+    out->base = base;
+    const ElfDyn* dyn = nullptr;
+    for (int i = 0; i < phnum; ++i) {
+        if (phdrs[i].p_type == PT_DYNAMIC) {
+            dyn = reinterpret_cast<const ElfDyn*>(base + phdrs[i].p_vaddr);
+            break;
         }
     }
-    LOGW("could not resolve %s", what);
+    if (!dyn) return false;
+    for (const ElfDyn* d = dyn; d->d_tag != DT_NULL; ++d) {
+        switch (d->d_tag) {
+            case DT_SYMTAB:    out->symtab   = reinterpret_cast<const ElfSym*>  (base + d->d_un.d_ptr); break;
+            case DT_STRTAB:    out->strtab   = reinterpret_cast<const char*>   (base + d->d_un.d_ptr); break;
+            case DT_GNU_HASH:  out->gnu_hash = reinterpret_cast<const uint32_t*>(base + d->d_un.d_ptr); break;
+            default: break;
+        }
+    }
+    return out->symtab && out->strtab && out->gnu_hash;
+}
+
+static uint32_t gnu_hash(const char* s) {
+    uint32_t h = 5381;
+    while (*s) h = h * 33 + (uint8_t)*s++;
+    return h;
+}
+
+static void* lookup_symbol(const ParsedLib& lib, const char* name) {
+    if (!lib.gnu_hash) return nullptr;
+    const uint32_t nbuckets    = lib.gnu_hash[0];
+    const uint32_t symbias     = lib.gnu_hash[1];
+    const uint32_t bloom_size  = lib.gnu_hash[2];
+    const uint32_t bloom_shift = lib.gnu_hash[3];
+    const ElfWord*  bloom    = reinterpret_cast<const ElfWord*>(lib.gnu_hash + 4);
+    const uint32_t* buckets  = reinterpret_cast<const uint32_t*>(bloom + bloom_size);
+    const uint32_t* chain    = buckets + nbuckets;
+
+    const uint32_t h = gnu_hash(name);
+
+    const ElfWord bw = bloom[(h / (sizeof(ElfWord) * 8)) % bloom_size];
+    const ElfWord mask = (ElfWord{1} << (h % (sizeof(ElfWord) * 8)))
+                       | (ElfWord{1} << ((h >> bloom_shift) % (sizeof(ElfWord) * 8)));
+    if ((bw & mask) != mask) return nullptr;
+
+    uint32_t idx = buckets[h % nbuckets];
+    if (idx < symbias) return nullptr;
+
+    while (true) {
+        const uint32_t cval = chain[idx - symbias];
+        if (((cval ^ h) >> 1) == 0) {
+            const ElfSym& sym = lib.symtab[idx];
+            if (std::strcmp(lib.strtab + sym.st_name, name) == 0 && sym.st_value != 0) {
+                return reinterpret_cast<void*>(lib.base + sym.st_value);
+            }
+        }
+        if (cval & 1) break;
+        ++idx;
+    }
     return nullptr;
 }
 
-static bool invoke_pool(void* sym_src, const char* via) {
-    auto self_fn  = reinterpret_cast<void* (*)()>     (dlsym(sym_src, kSelfSym));
-    auto start_fn = reinterpret_cast<void  (*)(void*)>(dlsym(sym_src, kStartSym));
-    if (!self_fn || !start_fn) {
-        const char* err = dlerror();
-        LOGW("%s: ProcessState::self=%p ProcessState::startThreadPool=%p (%s)",
-             via, self_fn, start_fn, err ? err : "no err");
-        return false;
-    }
-    void* ps = self_fn();
-    if (!ps) { LOGW("%s: ProcessState::self() returned null", via); return false; }
-    start_fn(ps);
-    LOGI("%s: ProcessState::startThreadPool invoked (ps=%p)", via, ps);
-    return true;
-}
+struct Hunt {
+    const char* lib_substr;
+    void*       self_fn;
+    void*       start_fn;
+    const char* found_path;
+};
 
-// Diagnostic: list every shared object currently loaded in this process.
-static int phdr_log_cb(struct dl_phdr_info* info, size_t, void*) {
-    const char* n = (info->dlpi_name && *info->dlpi_name) ? info->dlpi_name : "(main)";
-    LOGI("loaded: '%s' base=%p", n, reinterpret_cast<void*>(info->dlpi_addr));
+static int hunt_cb(struct dl_phdr_info* info, size_t, void* data) {
+    auto* h = static_cast<Hunt*>(data);
+    if (!info->dlpi_name || !std::strstr(info->dlpi_name, h->lib_substr)) return 0;
+    ParsedLib lib;
+    if (!parse_lib(info->dlpi_addr, info->dlpi_phdr, info->dlpi_phnum, &lib)) {
+        LOGW("found %s but couldn't parse ELF", info->dlpi_name);
+        return 0;
+    }
+    h->self_fn  = lookup_symbol(lib, kSelfSym);
+    h->start_fn = lookup_symbol(lib, kStartSym);
+    if (h->self_fn && h->start_fn) {
+        h->found_path = info->dlpi_name;
+        return 1;
+    }
+    LOGW("found %s but symbols missing: self=%p start=%p",
+         info->dlpi_name, h->self_fn, h->start_fn);
     return 0;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_aimgui_BinderBoot_startThreadPool(JNIEnv*, jclass) {
-    // Path 1 — symbols may already be in the process global view (e.g. if
-    // Java has triggered any binder op already).
-    if (invoke_pool(RTLD_DEFAULT, "RTLD_DEFAULT")) return JNI_TRUE;
+    Hunt h { "libbinder.so", nullptr, nullptr, nullptr };
+    dl_iterate_phdr(hunt_cb, &h);
 
-    // Loaded-library diagnostics.
-    LOGI("--- dl_iterate_phdr ---");
-    dl_iterate_phdr(phdr_log_cb, nullptr);
-    LOGI("--- end iterate ---");
-
-    // libdl handle for finding namespace APIs (RTLD_DEFAULT may filter
-    // them out in clns-1).
-    void* libdl = dlopen("libdl.so", RTLD_NOW);
-    if (!libdl) {
-        const char* e = dlerror();
-        LOGW("dlopen libdl.so: %s", e ? e : "?");
-    } else {
-        LOGI("libdl handle = %p", libdl);
+    if (!h.self_fn || !h.start_fn) {
+        LOGW("could not resolve ProcessState symbols inside any loaded libbinder");
+        return JNI_FALSE;
     }
 
-    auto get_ns     = reinterpret_cast<get_ns_t>    (find_sym(libdl, kGetNsNames,    "android_get_exported_namespace"));
-    auto dlopen_ext = reinterpret_cast<dlopen_ext_t>(find_sym(libdl, kDlopenExtNames, "android_dlopen_ext"));
-
-    // Path 2 — namespace escape via android_dlopen_ext.
-    if (get_ns && dlopen_ext) {
-        const char* nss[] = {
-            "default", "system", "art", "com_android_art", "runtime",
-            "neuralnetworks", nullptr };
-        for (const char** np = nss; *np; ++np) {
-            struct android_namespace_t* ns = get_ns(*np);
-            if (!ns) { LOGW("namespace '%s' not exported", *np); continue; }
-            android_dlextinfo info{};
-            info.flags = ANDROID_DLEXT_USE_NAMESPACE;
-            info.library_namespace = ns;
-            void* h = dlopen_ext("libbinder.so", RTLD_NOW, &info);
-            if (!h) { LOGW("ns=%s dlopen failed: %s", *np, dlerror()); continue; }
-            char tag[48];
-            std::snprintf(tag, sizeof(tag), "ns=%s", *np);
-            if (invoke_pool(h, tag)) return JNI_TRUE;
-        }
-    } else {
-        LOGW("namespace API unavailable; falling through");
-    }
-
-    // Path 3 — plain dlopen (clns-1 almost certainly denies).
-    if (void* h = dlopen("libbinder.so", RTLD_NOW)) {
-        if (invoke_pool(h, "plain-dlopen")) return JNI_TRUE;
-    } else {
-        LOGW("plain dlopen libbinder.so: %s", dlerror());
-    }
-
-    LOGW("all paths exhausted; ProcessState::startThreadPool was NOT invoked");
-    return JNI_FALSE;
+    auto self_fn  = reinterpret_cast<void* (*)()>     (h.self_fn);
+    auto start_fn = reinterpret_cast<void  (*)(void*)>(h.start_fn);
+    void* ps = self_fn();
+    if (!ps) { LOGW("ProcessState::self() returned null"); return JNI_FALSE; }
+    start_fn(ps);
+    LOGI("ProcessState::startThreadPool() invoked via ELF lookup in %s (ps=%p)",
+         h.found_path, ps);
+    return JNI_TRUE;
 }
