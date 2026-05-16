@@ -95,6 +95,7 @@ std::vector<PendingEvent> g_queue;
 std::atomic<bool>         g_running{false};
 std::vector<int>          g_fds;
 std::vector<std::thread>  g_threads;
+std::atomic<int>          g_volume_presses{0};
 
 // ─── Probe whether a /dev/input/eventX device looks like a keyboard ──
 bool LooksLikeKeyboard(int fd) {
@@ -105,7 +106,11 @@ bool LooksLikeKeyboard(int fd) {
     };
     int letters = 0;
     for (int k = KEY_A; k <= KEY_Z; ++k) if (has(k)) ++letters;
-    return letters >= 20; // tolerate a few missing letters
+    if (letters >= 20) return true;
+    // Also accept the volume / power gpio-keys device — needed for the
+    // volume-key UI-toggle shortcut.
+    if (has(KEY_VOLUMEUP) || has(KEY_VOLUMEDOWN)) return true;
+    return false;
 }
 
 // ─── Reader thread ────────────────────────────────────────────────────
@@ -128,6 +133,13 @@ void ReaderLoop(int fd) {
             if (ev[i].type != EV_KEY) continue;
             const bool down  = (ev[i].value != 0);
             const bool press = (ev[i].value == 1); // not repeat (=2)
+
+            // Volume keys → UI-visibility toggle (don't queue as text input).
+            if (press && (ev[i].code == KEY_VOLUMEUP ||
+                          ev[i].code == KEY_VOLUMEDOWN)) {
+                g_volume_presses.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
 
             if (ev[i].code == KEY_LEFTSHIFT || ev[i].code == KEY_RIGHTSHIFT) {
                 shift = down;
@@ -190,6 +202,10 @@ void Flush() {
         else                              io.AddInputCharacter(ev.ch);
     }
     g_queue.clear();
+}
+
+int ConsumeVolumePresses() {
+    return g_volume_presses.exchange(0, std::memory_order_relaxed);
 }
 
 } // namespace aimgui::kbd_input

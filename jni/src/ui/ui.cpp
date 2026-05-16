@@ -1,8 +1,8 @@
 #include "ui/ui.h"
 
-#include "core/termux_input.h"
 #include "imgui.h"
 
+#include <cmath>
 #include <cstdio>
 
 namespace aimgui {
@@ -75,10 +75,10 @@ void DrawDashboard(const UiState* state) {
     KV("anti-recording", "%s", state->permeate_record ? "on" : "off");
 
     ImGui::Spacing();
-    ImGui::SeparatorText("Hint");
-    ImGui::TextWrapped(
-        "Pick a section in the left panel to tweak settings or play with "
-        "the widgets. Drag the title bar to move this window.");
+    ImGui::SeparatorText("Tips");
+    ImGui::TextWrapped("Press a volume button to fold the window into a "
+                       "Dynamic Island at the top of the screen; tap the "
+                       "island or press a volume button again to expand it back.");
 }
 
 void DrawWidgets() {
@@ -88,37 +88,10 @@ void DrawWidgets() {
     static float  slider  = 0.5f;
     static bool   toggle  = false;
     static ImVec4 tint(0.40f, 0.70f, 1.00f, 1.0f);
-    static char   text[64] = "Hello, AImGui";
 
     if (ImGui::Button("tap me")) counter++;
     ImGui::SameLine();
     ImGui::Text("count = %d", counter);
-
-    ImGui::InputText("##text", text, IM_ARRAYSIZE(text));
-    ImGui::SameLine();
-    {
-        const bool busy = termux_input::IsBusy();
-        const bool ok   = termux_input::IsAvailable();
-        if (!ok)   ImGui::BeginDisabled();
-        if (busy)  ImGui::BeginDisabled();
-        if (ImGui::Button(busy ? "..." : "edit")) {
-            termux_input::Launch(text, IM_ARRAYSIZE(text),
-                                 "AImGui — enter text", text);
-        }
-        if (busy)  ImGui::EndDisabled();
-        if (!ok)   ImGui::EndDisabled();
-        ImGui::SameLine();
-        ImGui::TextUnformatted("text");
-    }
-    if (!termux_input::IsAvailable()) {
-        ImGui::TextDisabled(
-            "Install Termux + Termux:API to enable the 'edit' button; it\n"
-            "popens termux-dialog to bring up the system IME.");
-    } else {
-        ImGui::TextDisabled(
-            "Tap 'edit' to open Termux:API's text dialog (any IME — soft\n"
-            "keyboard, voice, handwriting — works there).");
-    }
 
     ImGui::SliderFloat("slider", &slider, 0.0f, 1.0f, "%.3f");
     ImGui::Checkbox("toggle",  &toggle);
@@ -207,24 +180,18 @@ void DrawAbout() {
     ImGui::BulletText("VSync-locked frame pacer, near-zero CPU spin");
     ImGui::BulletText("Observe-only touch (no /dev/uinput, system unaffected)");
     ImGui::BulletText("Anti-recording surface toggle");
+    ImGui::BulletText("Volume-key Dynamic Island fold");
 }
 
 // ─── Sidebar ─────────────────────────────────────────────────────────────
 void DrawSidebar(Page& current, bool* keep_running, const UiState* state) {
-    // Layout knobs. All measurements are from the sidebar's left border.
-    //
-    //   ┌──────────────────────────────────────────┐
-    //   │ ◀──── kInnerPadX ────▶                   │
-    //   │                       ┌─ selectable.left │
-    //   │           ┌─ accent   │                  │
-    //   │    [pad   |▌  |gap] [   Dashboard   ]    │
-    //   │           └──┴─ kAccentInset            │
-    //   └──────────────────────────────────────────┘
-    constexpr float kInnerPadX   = 18.0f;   // gap from border to selectable
-    constexpr float kInnerPadY   = 14.0f;
-    constexpr float kSelectableH = 42.0f;
-    constexpr float kAccentInset = 10.0f;   // accent bar sits 10 px LEFT of selectable
-    constexpr float kAccentW     = 4.0f;
+    constexpr float kInnerPadX     = 18.0f;
+    constexpr float kInnerPadY     = 14.0f;
+    constexpr float kSelectableH   = 42.0f;
+    constexpr float kAccentInset   = 10.0f;
+    constexpr float kAccentW       = 4.0f;
+    constexpr float kFooterH       = 110.0f;
+    constexpr float kBottomMargin  = 16.0f;
 
     ImGui::PushStyleColor(ImGuiCol_ChildBg,       ImVec4(0.07f, 0.08f, 0.10f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_Header,        ImVec4(0.18f, 0.32f, 0.58f, 0.55f));
@@ -240,19 +207,7 @@ void DrawSidebar(Page& current, bool* keep_running, const UiState* state) {
                       ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding,
                       ImGuiWindowFlags_NoScrollbar);
 
-    // Title (text starts at sidebar_left + kInnerPadX — aligned with the
-    // selectables below, both via their natural Selectable.text_left).
-    ImGui::TextUnformatted("AImGui");
-    ImGui::TextDisabled("v%s", ImGui::GetVersion());
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    // Nav items. With SelectableTextAlign=(0,0.5) the text would sit flush
-    // against the selectable's left edge → the accent bar would overlap it.
-    // Solution: draw the accent bar in the gap between the sidebar border
-    // and the selectable (still inside the child window's clip rect).
+    // Nav items, accent on the active one.
     const ImU32 accent = ImGui::GetColorU32(ImVec4(0.30f, 0.62f, 1.0f, 1.0f));
     for (const auto& p : kPages) {
         bool selected = (current == p.id);
@@ -269,9 +224,8 @@ void DrawSidebar(Page& current, bool* keep_running, const UiState* state) {
         }
     }
 
-    // Footer pinned at the bottom: renderer label + full-width exit btn.
-    constexpr float kFooterH = 80.0f;
-    float remaining = ImGui::GetWindowHeight() - ImGui::GetCursorPosY() - kFooterH;
+    // Footer pinned at the bottom, with breathing room before the screen edge.
+    float remaining = ImGui::GetWindowHeight() - ImGui::GetCursorPosY() - kFooterH - kBottomMargin;
     if (remaining > 0) ImGui::Dummy(ImVec2(0, remaining));
 
     ImGui::Separator();
@@ -279,9 +233,12 @@ void DrawSidebar(Page& current, bool* keep_running, const UiState* state) {
     ImGui::TextDisabled("%s", state->renderer_name ? state->renderer_name : "?");
     ImGui::Spacing();
 
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 10));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 12));
     if (ImGui::Button("exit", ImVec2(-1, 0))) *keep_running = false;
     ImGui::PopStyleVar();
+
+    // Extra bottom margin so the button doesn't kiss the screen edge.
+    ImGui::Dummy(ImVec2(0, kBottomMargin));
 
     ImGui::EndChild();
 
@@ -306,22 +263,124 @@ void DrawContent(UiState* state, Page page) {
     ImGui::PopStyleVar();
 }
 
+void DrawIslandContent() {
+    ImGuiIO& io = ImGui::GetIO();
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.0f FPS", io.Framerate);
+
+    ImVec2 ts = ImGui::CalcTextSize(buf);
+    ImVec2 ws = ImGui::GetWindowSize();
+    ImGui::SetCursorPos(ImVec2((ws.x - ts.x) * 0.5f,
+                               (ws.y - ts.y) * 0.5f));
+    ImGui::TextUnformatted(buf);
+}
+
+// Critically-ish damped spring: pos chases target, mild overshoot for the
+// "sticky / 灵动" feel.
+void UpdateSpring(float* pos, float* vel, float target, float dt) {
+    constexpr float kOmega = 12.0f;   // natural frequency
+    constexpr float kZeta  = 0.82f;   // damping ratio (<1 = bouncy)
+    const float diff  = target - *pos;
+    const float accel = kOmega * kOmega * diff - 2.0f * kZeta * kOmega * (*vel);
+    *vel += accel * dt;
+    *pos += (*vel) * dt;
+    if (std::abs(diff) < 0.001f && std::abs(*vel) < 0.005f) {
+        *pos = target;
+        *vel = 0.0f;
+    }
+}
+
 } // namespace
 
 void DrawUi(UiState* state, bool* keep_running) {
     ApplyStyleOnce();
 
-    ImGui::SetNextWindowPos (ImVec2(60, 100),  ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(900, 620), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSizeConstraints(ImVec2(700, 560), ImVec2(FLT_MAX, FLT_MAX));
+    ImGuiIO& io = ImGui::GetIO();
+    const float dt = io.DeltaTime > 0.0f ? io.DeltaTime : 1.0f / 60.0f;
 
-    if (ImGui::Begin("AImGui", keep_running, ImGuiWindowFlags_NoCollapse)) {
-        static Page page = Page::Dashboard;
-        DrawSidebar(page, keep_running, state);
-        ImGui::SameLine(0, 0);
-        DrawContent(state, page);
+    // ── Spring-driven expand/collapse animation ──────────────────────
+    const float target = state->collapsed ? 0.0f : 1.0f;
+    UpdateSpring(&state->expand, &state->expand_vel, target, dt);
+    const float t = state->expand;
+    const float lt = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);  // clamped for layout
+
+    // ── Geometry: island top-center, lerping to/from full window ─────
+    constexpr float kIslandW   = 280.0f;
+    constexpr float kIslandH   = 56.0f;
+    constexpr float kIslandTop = 28.0f;
+
+    const float dw = state->display_w > 0 ? (float)state->display_w : io.DisplaySize.x;
+    const ImVec2 island_pos (dw * 0.5f - kIslandW * 0.5f, kIslandTop);
+    const ImVec2 island_size(kIslandW, kIslandH);
+
+    auto lerp = [](ImVec2 a, ImVec2 b, float u) {
+        return ImVec2(a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u);
+    };
+    const ImVec2 win_pos  = lerp(island_pos,  state->last_full_pos,  lt);
+    const ImVec2 win_size = lerp(island_size, state->last_full_size, lt);
+
+    // Animation in flight: pin position / size every frame. Fully
+    // expanded: let ImGui keep the user's drag position.
+    const bool show_chrome    = (lt > 0.55f);
+    const bool overriding_pos = (lt < 0.999f);
+
+    if (overriding_pos) {
+        ImGui::SetNextWindowPos (win_pos);
+        ImGui::SetNextWindowSize(win_size);
+    } else {
+        ImGui::SetNextWindowPos (state->last_full_pos,  ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(state->last_full_size, ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSizeConstraints(ImVec2(700, 560), ImVec2(FLT_MAX, FLT_MAX));
+    }
+
+    // Pill ↔ rounded rectangle: rounding lerps with the morph.
+    const float rounding = (kIslandH * 0.5f) * (1.0f - lt) + 12.0f * lt;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, rounding);
+
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings;
+    if (!show_chrome) {
+        flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
+    }
+
+    char title[64];
+    std::snprintf(title, sizeof(title), "AImGui  v%s###aimgui_main", ImGui::GetVersion());
+
+    if (ImGui::Begin(title, show_chrome ? keep_running : nullptr, flags)) {
+        // Remember the user's drag position whenever we're fully expanded.
+        if (lt >= 0.999f && !state->collapsed) {
+            state->last_full_pos  = ImGui::GetWindowPos();
+            state->last_full_size = ImGui::GetWindowSize();
+        }
+
+        // ── Island content (FPS centered, fades out as we expand) ─
+        const float island_alpha = 1.0f - (lt < 0.30f ? lt / 0.30f : 1.0f);
+        if (island_alpha > 0.01f) {
+            ImGui::PushStyleVar(ImGuiStyleVar_Alpha, island_alpha);
+            DrawIslandContent();
+            ImGui::PopStyleVar();
+
+            // Tap the pill to expand back.
+            if (!show_chrome && ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0)) {
+                state->collapsed = false;
+            }
+        }
+
+        // ── Full UI (fades in late in the morph) ──────────────────
+        const float full_alpha = lt > 0.70f ? (lt - 0.70f) / 0.30f : 0.0f;
+        if (full_alpha > 0.01f) {
+            ImGui::PushStyleVar(ImGuiStyleVar_Alpha, full_alpha);
+
+            static Page page = Page::Dashboard;
+            DrawSidebar(page, keep_running, state);
+            ImGui::SameLine(0, 0);
+            DrawContent(state, page);
+
+            ImGui::PopStyleVar();
+        }
     }
     ImGui::End();
+
+    ImGui::PopStyleVar();   // WindowRounding
 }
 
 } // namespace aimgui

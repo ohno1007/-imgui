@@ -2,7 +2,6 @@
 #include "core/font.h"
 #include "core/keyboard_input.h"
 #include "core/renderer.h"
-#include "core/termux_input.h"
 #include "imgui.h"
 #include "platform/ANativeWindowCreator.h"
 #include "platform/TouchHelperA.h"
@@ -35,10 +34,7 @@ void DestroyWindow(WindowCtx* ctx) {
     if (ctx->window)   { android::ANativeWindowCreator::Destroy(ctx->window); ctx->window = nullptr; }
 }
 
-// Drift-corrected frame pacer. Holds an absolute next_deadline that
-// advances by exactly one period each frame, so wake-up jitter doesn't
-// accumulate into a lower-than-target average rate. Resyncs if we fall a
-// full period behind (e.g. the user just lowered the target FPS).
+// Drift-corrected frame pacer (see commit 58990ff).
 class FramePacer {
 public:
     void SetTargetFps(int fps) {
@@ -48,16 +44,13 @@ public:
                               : std::chrono::nanoseconds::zero();
         m_NextDeadline = std::chrono::steady_clock::now();
     }
-
-    // Block until it's time for the next frame. No-op when uncapped.
     void Wait() {
         if (m_TargetFps <= 0) return;
         auto now = std::chrono::steady_clock::now();
         m_NextDeadline += m_Period;
-        if (m_NextDeadline < now) m_NextDeadline = now + m_Period; // resync
+        if (m_NextDeadline < now) m_NextDeadline = now + m_Period;
         std::this_thread::sleep_until(m_NextDeadline);
     }
-
 private:
     int m_TargetFps = 0;
     std::chrono::nanoseconds m_Period{};
@@ -84,11 +77,10 @@ int main() {
 
     ImGui::StyleColorsDark();
     aimgui::LoadDefaultAndSystemCJKFont(22.0f);
-    // The UI layer applies its own (touch-sized) style values; see
-    // ApplyStyleOnce() in ui.cpp. Doing the scaling there keeps the
-    // numbers consistent with the layout assumptions.
 
     aimgui::UiState st;
+    st.display_w = info.width;
+    st.display_h = info.height;
 
     WindowCtx ctx;
     if (!BuildWindow(&ctx, W, H, st.permeate_record)) {
@@ -101,7 +93,6 @@ int main() {
     Touch::setOrientation((int)info.orientation);
 
     aimgui::kbd_input::Init();
-    aimgui::termux_input::Init();
 
     auto last = clock::now();
     bool running = true;
@@ -118,16 +109,23 @@ int main() {
         pacer.SetTargetFps(st.target_fps);
 
         info = ANativeWindowCreator::GetDisplayInfo();
+        st.display_w = info.width;
+        st.display_h = info.height;
         if (info.orientation != cached_orientation) {
             cached_orientation = info.orientation;
             Touch::setOrientation((int)info.orientation);
         }
+
+        // Volume key toggles full ↔ island.
+        if (aimgui::kbd_input::ConsumeVolumePresses() > 0) {
+            st.collapsed = !st.collapsed;
+        }
+
         if (!st.permeate_record) {
             ANativeWindowCreator::ProcessMirrorDisplay();
         }
 
         aimgui::kbd_input::Flush();
-        aimgui::termux_input::Tick();
 
         ctx.renderer->NewFrame();
         ImGui::NewFrame();
@@ -136,7 +134,6 @@ int main() {
 
         pacer.Wait();
 
-        // ── anti-recording toggle ───────────────────────────────────
         if (st.request_permeate_toggle) {
             st.request_permeate_toggle = false;
             st.permeate_record = !st.permeate_record;
@@ -149,7 +146,6 @@ int main() {
         }
     }
 
-    aimgui::termux_input::Shutdown();
     aimgui::kbd_input::Shutdown();
     DestroyWindow(&ctx);
     ImGui::DestroyContext();

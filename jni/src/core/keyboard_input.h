@@ -23,4 +23,9 @@ void Shutdown();
 // main thread, before ImGui::NewFrame().
 void Flush();
 
+// Returns and clears the count of volume-up / volume-down press edges
+// captured since the last call. Used to toggle UI visibility from the
+// device's physical buttons.
+int ConsumeVolumePresses();
+
 } // namespace aimgui::kbd_input
