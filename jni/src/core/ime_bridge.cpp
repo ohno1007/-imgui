@@ -35,6 +35,7 @@ std::atomic<bool>  g_ime_visible{false};
 
 std::mutex                g_q_mtx;
 std::vector<std::string>  g_text_queue;
+std::vector<ImGuiKey>     g_key_queue;
 
 // Decodes a JSON-style "..." into raw UTF-8.
 std::string DecodeJsonString(const std::string& s) {
@@ -68,6 +69,16 @@ void HandleLine(const std::string& line) {
         if (!text.empty()) {
             std::lock_guard<std::mutex> lk(g_q_mtx);
             g_text_queue.push_back(std::move(text));
+        }
+    } else if (line.rfind("KEY ", 0) == 0) {
+        std::string key = line.substr(4);
+        ImGuiKey k = ImGuiKey_None;
+        if      (key == "BACKSPACE") k = ImGuiKey_Backspace;
+        else if (key == "ENTER")     k = ImGuiKey_Enter;
+        else if (key == "TAB")       k = ImGuiKey_Tab;
+        if (k != ImGuiKey_None) {
+            std::lock_guard<std::mutex> lk(g_q_mtx);
+            g_key_queue.push_back(k);
         }
     } else if (line == "IME_SHOWN") {
         g_ime_visible.store(true);
@@ -197,14 +208,20 @@ void Show()         { WriteLine("SHOW"); }
 void Hide()         { WriteLine("HIDE"); }
 
 void Flush() {
-    std::vector<std::string> drained;
+    std::vector<std::string> drained_text;
+    std::vector<ImGuiKey>    drained_keys;
     {
         std::lock_guard<std::mutex> lk(g_q_mtx);
-        drained.swap(g_text_queue);
+        drained_text.swap(g_text_queue);
+        drained_keys.swap(g_key_queue);
     }
-    if (drained.empty()) return;
+    if (drained_text.empty() && drained_keys.empty()) return;
     ImGuiIO& io = ImGui::GetIO();
-    for (const auto& s : drained) io.AddInputCharactersUTF8(s.c_str());
+    for (auto k : drained_keys) {
+        io.AddKeyEvent(k, true);
+        io.AddKeyEvent(k, false);
+    }
+    for (const auto& s : drained_text) io.AddInputCharactersUTF8(s.c_str());
 }
 
 void Shutdown() {

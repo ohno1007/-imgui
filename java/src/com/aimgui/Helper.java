@@ -5,15 +5,16 @@ import android.graphics.PixelFormat;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
-import android.text.Editable;
-import android.text.TextWatcher;
-import android.view.ContextThemeWrapper;
+import android.text.InputType;
+import android.view.KeyEvent;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowManager;
+import android.view.inputmethod.BaseInputConnection;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
-import android.widget.EditText;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -23,24 +24,28 @@ import java.lang.reflect.Method;
 
 /**
  * IME bridge for AImGui's native ELF. Launched via /system/bin/app_process.
- * Hidden 1×1 EditText hosts the IME; characters travel back over stdout.
+ *
+ * Hosts a bare focusable View (no EditText / TextView / Typeface — those
+ * NPE inside a system Context that has no Theme + no Typeface defaults)
+ * with a custom InputConnection. IMEs see it as a text editor and deliver
+ * characters through commitText(), which we forward to native via stdout.
  *
  * Protocol (line-based):
  *     →  READY / VIEW_OK / IME_SHOWN / IME_HIDDEN / PONG
  *     →  TEXT "<json-escaped string>"
- *     →  ERROR <msg>  /  FATAL <stack-trace>
+ *     →  KEY  BACKSPACE | ENTER
+ *     →  DEBUG <msg>     /  ERROR <msg>     /  FATAL <stack-trace>
  *     ←  SHOW / HIDE / CLEAR / PING / QUIT
  */
 public final class Helper {
 
-    private static volatile EditText sEdit;
+    private static volatile InputView sView;
     private static volatile InputMethodManager sImm;
     private static volatile WindowManager sWm;
     private static volatile Handler sHandler;
 
     public static void main(String[] args) {
         out("READY");
-
         try {
             runMain(args);
         } catch (Throwable t) {
@@ -50,29 +55,18 @@ public final class Helper {
     }
 
     private static void runMain(String[] args) {
-        // app_process may or may not have prepared the main looper. Guard
-        // both possibilities.
         out("DEBUG looper-prepare myLooper=" + (Looper.myLooper() != null));
         if (Looper.myLooper() == null) {
-            try {
-                Looper.prepareMainLooper();
-            } catch (IllegalStateException already) {
-                // Some Android forks pre-init it; safe to continue.
-            }
+            try { Looper.prepareMainLooper(); } catch (IllegalStateException ignored) {}
         }
         out("DEBUG looper-ready main=" + (Looper.getMainLooper() != null));
 
         sHandler = new Handler(Looper.getMainLooper());
 
-        // Set up the view tree on the looper thread, with a top-level
-        // catch + stack trace so a NPE in EditText init doesn't kill us.
         sHandler.post(new Runnable() {
             @Override public void run() {
-                try {
-                    setupViews();
-                } catch (Throwable t) {
-                    out("FATAL setupViews " + describe(t));
-                }
+                try { setupViews(); }
+                catch (Throwable t) { out("FATAL setupViews " + describe(t)); }
             }
         });
 
@@ -88,28 +82,21 @@ public final class Helper {
 
     private static void setupViews() throws Exception {
         out("DEBUG setup-1 get-context");
-        Context base = systemContextViaReflection();
-        out("DEBUG setup-2 ctx=" + (base != null));
-        if (base == null) { out("ERROR no-context"); return; }
-
-        // The bare system context has no theme — EditText's default
-        // constructor tries to read text-appearance attrs and NPEs.
-        // Wrap with a known theme.
-        Context ctx = new ContextThemeWrapper(base, android.R.style.Theme_DeviceDefault);
-        out("DEBUG setup-3 themed");
+        Context ctx = systemContextViaReflection();
+        out("DEBUG setup-2 ctx=" + (ctx != null));
+        if (ctx == null) { out("ERROR no-context"); return; }
 
         sWm  = (WindowManager) ctx.getSystemService(Context.WINDOW_SERVICE);
         sImm = (InputMethodManager) ctx.getSystemService(Context.INPUT_METHOD_SERVICE);
-        out("DEBUG setup-4 wm=" + (sWm != null) + " imm=" + (sImm != null));
+        out("DEBUG setup-3 wm=" + (sWm != null) + " imm=" + (sImm != null));
         if (sWm == null || sImm == null) { out("ERROR no-services"); return; }
 
-        sEdit = new EditText(ctx);
-        out("DEBUG setup-5 edit-created");
-        sEdit.setSingleLine(false);
-        sEdit.setFocusableInTouchMode(true);
+        sView = new InputView(ctx);
+        sView.setFocusable(true);
+        sView.setFocusableInTouchMode(true);
+        out("DEBUG setup-4 view-created");
 
-        // Detect IME visibility so the native side can mask its mouse input.
-        sEdit.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+        sView.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
             private boolean prev = false;
             @Override
             public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
@@ -127,25 +114,12 @@ public final class Helper {
             }
         });
 
-        sEdit.addTextChangedListener(new TextWatcher() {
-            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
-            @Override public void afterTextChanged(Editable s) {}
-            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
-                if (count > 0) {
-                    out("TEXT " + jsonEscape(s.subSequence(start, start + count).toString()));
-                }
-            }
-        });
-
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 1, 1, 0, 0, 0,
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
 
-        // Try the modern overlay type first, then older system overlays. Each
-        // of these can fail with a SecurityException or BadTokenException
-        // depending on the OEM build; report all failures so we can debug.
         int[] types = {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY,
@@ -156,7 +130,7 @@ public final class Helper {
         for (int t : types) {
             lp.type = t;
             try {
-                sWm.addView(sEdit, lp);
+                sWm.addView(sView, lp);
                 out("VIEW_OK type=" + t);
                 added = true;
                 break;
@@ -167,15 +141,70 @@ public final class Helper {
         if (!added) out("ERROR addView all-types-failed");
     }
 
-    // ActivityThread.systemMain().getSystemContext() via reflection so we
-    // build without a stub framework.jar.
+    // Bare focusable View that announces itself as a text editor and
+    // gives the IME a minimal InputConnection that forwards everything
+    // to the native side.
+    private static final class InputView extends View {
+        InputView(Context ctx) { super(ctx); }
+
+        @Override public boolean onCheckIsTextEditor() { return true; }
+
+        @Override
+        public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
+            outAttrs.inputType  = InputType.TYPE_CLASS_TEXT;
+            outAttrs.imeOptions = EditorInfo.IME_ACTION_NONE;
+
+            return new BaseInputConnection(this, false) {
+                @Override
+                public boolean commitText(CharSequence text, int newCursorPosition) {
+                    if (text != null && text.length() > 0) {
+                        out("TEXT " + jsonEscape(text.toString()));
+                    }
+                    return true;
+                }
+                @Override
+                public boolean setComposingText(CharSequence text, int newCursorPosition) {
+                    // Skip the composing preview (e.g. pinyin candidates);
+                    // we wait for the final commitText().
+                    return true;
+                }
+                @Override
+                public boolean finishComposingText() { return true; }
+
+                @Override
+                public boolean sendKeyEvent(KeyEvent ev) {
+                    if (ev.getAction() != KeyEvent.ACTION_DOWN) return true;
+                    int code = ev.getKeyCode();
+                    if (code == KeyEvent.KEYCODE_DEL) {
+                        out("KEY BACKSPACE"); return true;
+                    }
+                    if (code == KeyEvent.KEYCODE_ENTER ||
+                        code == KeyEvent.KEYCODE_NUMPAD_ENTER) {
+                        out("KEY ENTER"); return true;
+                    }
+                    int ch = ev.getUnicodeChar();
+                    if (ch != 0) {
+                        out("TEXT " + jsonEscape(String.valueOf((char) ch)));
+                        return true;
+                    }
+                    return false;
+                }
+
+                @Override
+                public boolean deleteSurroundingText(int before, int after) {
+                    for (int i = 0; i < before; ++i) out("KEY BACKSPACE");
+                    return true;
+                }
+            };
+        }
+    }
+
     private static Context systemContextViaReflection() throws Exception {
         Class<?> at = Class.forName("android.app.ActivityThread");
         Object thread;
         try {
             thread = at.getMethod("systemMain").invoke(null);
         } catch (Throwable first) {
-            // Some OEMs gate systemMain — try currentActivityThread / new.
             try {
                 thread = at.getMethod("currentActivityThread").invoke(null);
                 if (thread == null) thread = at.getConstructor().newInstance();
@@ -186,8 +215,7 @@ public final class Helper {
                     first);
             }
         }
-        Method getSystemContext = at.getMethod("getSystemContext");
-        return (Context) getSystemContext.invoke(thread);
+        return (Context) at.getMethod("getSystemContext").invoke(thread);
     }
 
     private static void readCommandsLoop() {
@@ -215,29 +243,24 @@ public final class Helper {
         switch (cmd) {
             case "PING":  out("PONG"); break;
             case "SHOW":
-                if (sEdit != null && sImm != null) {
-                    sEdit.requestFocus();
-                    sImm.showSoftInput(sEdit, InputMethodManager.SHOW_FORCED);
+                if (sView != null && sImm != null) {
+                    sView.requestFocus();
+                    sImm.showSoftInput(sView, InputMethodManager.SHOW_FORCED);
                 } else {
-                    out("DEBUG SHOW but edit=" + (sEdit != null) + " imm=" + (sImm != null));
+                    out("DEBUG SHOW but view=" + (sView != null) + " imm=" + (sImm != null));
                 }
                 break;
             case "HIDE":
-                if (sEdit != null && sImm != null && sEdit.getWindowToken() != null) {
-                    sImm.hideSoftInputFromWindow(sEdit.getWindowToken(), 0);
+                if (sView != null && sImm != null && sView.getWindowToken() != null) {
+                    sImm.hideSoftInputFromWindow(sView.getWindowToken(), 0);
                 }
                 break;
-            case "CLEAR":
-                if (sEdit != null) sEdit.setText("");
-                break;
-            case "QUIT":
-                System.exit(0);
-                break;
+            case "CLEAR": break;       // bare View has no text state to clear
+            case "QUIT":  System.exit(0); break;
             default: break;
         }
     }
 
-    // ─── Output helpers ──────────────────────────────────────────────
     private static synchronized void out(String s) {
         System.out.println(s);
         System.out.flush();
@@ -257,7 +280,7 @@ public final class Helper {
             pw.print("  caused by ");
             pw.print(cause.getClass().getName()); pw.print(": "); pw.println(cause.getMessage());
         }
-        return sw.toString().replace('\n', ' ');   // logcat-friendly single line
+        return sw.toString().replace('\n', ' ');
     }
 
     private static String jsonEscape(String s) {
