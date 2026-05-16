@@ -1,0 +1,7 @@
+obj/
+libs/
+*.o
+*.a
+.vscode/
+.idea/
+*.log
