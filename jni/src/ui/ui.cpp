@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 
 namespace aimgui {
 
@@ -58,6 +59,42 @@ void ApplyStyleOnce() {
     s.Colors[ImGuiCol_TitleBgCollapsed] = s.Colors[ImGuiCol_TitleBgActive];
 }
 
+// SliderFloat that paints the numeric value centered on the grab itself
+// instead of next to the label. Behaves like the stock SliderFloat for
+// layout/interaction otherwise.
+bool SliderFloatGrabValue(const char* label, float* v, float v_min, float v_max,
+                          const char* fmt = "%.3f") {
+    bool changed = ImGui::SliderFloat(label, v, v_min, v_max, "");
+
+    const ImVec2 totalMin = ImGui::GetItemRectMin();
+    const ImVec2 totalMax = ImGui::GetItemRectMax();
+
+    // Item rect includes the trailing label; strip it to get the slider bar.
+    const char* hash = std::strstr(label, "##");
+    const char* visible_end = hash ? hash : label + std::strlen(label);
+    const ImVec2 label_size = ImGui::CalcTextSize(label, visible_end);
+    const float  inner      = ImGui::GetStyle().ItemInnerSpacing.x;
+    const float  slider_w   = (totalMax.x - totalMin.x) -
+                              (label_size.x > 0.0f ? label_size.x + inner : 0.0f);
+    const float  bar_right  = totalMin.x + slider_w;
+
+    const float grab_half = ImGui::GetStyle().GrabMinSize * 0.5f;
+    const float xL = totalMin.x + grab_half;
+    const float xR = bar_right  - grab_half;
+    float t = (v_max != v_min) ? (*v - v_min) / (v_max - v_min) : 0.0f;
+    if (t < 0.0f) t = 0.0f; else if (t > 1.0f) t = 1.0f;
+    const float grabX = xL + t * (xR - xL);
+
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), fmt, *v);
+    const ImVec2 ts = ImGui::CalcTextSize(buf);
+    const ImVec2 textPos(grabX - ts.x * 0.5f,
+                         (totalMin.y + totalMax.y - ts.y) * 0.5f);
+    ImGui::GetWindowDrawList()->AddText(textPos, IM_COL32_WHITE, buf);
+
+    return changed;
+}
+
 void KV(const char* key, const char* fmt, ...) {
     ImGui::TextDisabled("%s", key);
     ImGui::SameLine(200.0f);
@@ -95,16 +132,62 @@ void DrawWidgets() {
     ImGui::SameLine();
     ImGui::Text(u8"计数 = %d", counter);
 
-    ImGui::SliderFloat(u8"滑块",   &slider, 0.0f, 1.0f, "%.3f");
+    SliderFloatGrabValue(u8"滑块", &slider, 0.0f, 1.0f, "%.3f");
     ImGui::Checkbox  (u8"开关",   &toggle);
     ImGui::ColorEdit4(u8"取色器", (float*)&tint);
 
     ImGui::Spacing();
-    ImGui::SeparatorText(u8"列表");
-    static int selected = -1;
-    const char* items[] = { u8"第一项", u8"第二项", u8"第三项", u8"第四项" };
-    for (int i = 0; i < IM_ARRAYSIZE(items); ++i) {
-        if (ImGui::Selectable(items[i], selected == i)) selected = i;
+
+    // Collapsible list with a shared-element transition: a single rounded
+    // highlight rect lerps from the old selected row to the new one each
+    // frame, drawn beneath the row text via DrawList channels.
+    if (ImGui::CollapsingHeader(u8"列表", ImGuiTreeNodeFlags_DefaultOpen)) {
+        static int    selected         = 0;
+        static ImVec2 anim_min         = ImVec2(0, 0);
+        static ImVec2 anim_max         = ImVec2(0, 0);
+        static bool   anim_initialized = false;
+
+        const char* items[] = { u8"第一项", u8"第二项", u8"第三项", u8"第四项" };
+        const int N = IM_ARRAYSIZE(items);
+
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->ChannelsSplit(2);
+        dl->ChannelsSetCurrent(1); // text/interaction on top channel
+
+        // Hide ImGui's built-in selectable highlight; we paint our own.
+        ImGui::PushStyleColor(ImGuiCol_Header,        IM_COL32(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_COL32(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_HeaderActive,  IM_COL32(0, 0, 0, 0));
+
+        ImVec2 sel_min(0, 0), sel_max(0, 0);
+        for (int i = 0; i < N; ++i) {
+            if (ImGui::Selectable(items[i], selected == i)) selected = i;
+            if (selected == i) {
+                sel_min = ImGui::GetItemRectMin();
+                sel_max = ImGui::GetItemRectMax();
+            }
+        }
+        ImGui::PopStyleColor(3);
+
+        // Lerp animated highlight toward the currently-selected row.
+        dl->ChannelsSetCurrent(0);
+        if (sel_max.y > sel_min.y) {
+            if (!anim_initialized) {
+                anim_min = sel_min;
+                anim_max = sel_max;
+                anim_initialized = true;
+            } else {
+                const float dt    = ImGui::GetIO().DeltaTime;
+                const float alpha = 1.0f - std::exp(-15.0f * dt);
+                anim_min.x += (sel_min.x - anim_min.x) * alpha;
+                anim_min.y += (sel_min.y - anim_min.y) * alpha;
+                anim_max.x += (sel_max.x - anim_max.x) * alpha;
+                anim_max.y += (sel_max.y - anim_max.y) * alpha;
+            }
+            const ImU32 col = ImGui::GetColorU32(ImVec4(0.22f, 0.40f, 0.78f, 0.55f));
+            dl->AddRectFilled(anim_min, anim_max, col, 6.0f);
+        }
+        dl->ChannelsMerge();
     }
 
     ImGui::Spacing();
@@ -194,10 +277,14 @@ void DrawSidebar(Page& current, bool* keep_running, const UiState* state) {
     constexpr float kFooterH       = 110.0f;
     constexpr float kBottomMargin  = 16.0f;
 
+    // Click on a sidebar entry should land directly on the selected color —
+    // no intermediate hover-gray or transient pressed-blue. Push the same
+    // color into all three slots.
+    const ImVec4 sel_bg(0.22f, 0.40f, 0.78f, 0.55f);
     ImGui::PushStyleColor(ImGuiCol_ChildBg,       ImVec4(0.07f, 0.08f, 0.10f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_Header,        ImVec4(0.18f, 0.32f, 0.58f, 0.55f));
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.22f, 0.28f, 0.35f, 0.55f));
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive,  ImVec4(0.22f, 0.40f, 0.78f, 0.85f));
+    ImGui::PushStyleColor(ImGuiCol_Header,        sel_bg);
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, sel_bg);
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive,  sel_bg);
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,       ImVec2(kInnerPadX, kInnerPadY));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,         ImVec2(0, 4));
