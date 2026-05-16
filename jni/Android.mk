@@ -1,7 +1,10 @@
 JNI_ROOT := $(call my-dir)
 
+# Dear ImGui ships as a prebuilt static library; only its public headers live
+# in-tree under jni/include/imgui/.
+include $(JNI_ROOT)/imgui_prebuilt.mk
+
 # Pull in each static-library subproject.
-include $(JNI_ROOT)/src/imgui/Android.mk
 include $(JNI_ROOT)/src/platform/Android.mk
 include $(JNI_ROOT)/src/core/Android.mk
 
