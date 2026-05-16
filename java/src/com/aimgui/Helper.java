@@ -48,10 +48,17 @@ public final class Helper {
     public static void main(String[] args) {
         out("READY");
 
-        // Bring up libbinder's thread pool BEFORE any system-service call —
-        // attach()/addView() callback into our process from AMS / WMS, and
-        // without a thread serving Binder transactions those callbacks just
-        // queue until the caller times out and SIGKILLs us.
+        // Android 9+ hides @hide classes (BinderInternal, ServiceManager…)
+        // from reflection. Lift the restriction first via the standard
+        // FreeReflection / HiddenApiBypass trick — call Class.getDeclaredMethod
+        // through a meta-reflection handle to dodge its own filter, then
+        // invoke VMRuntime.setHiddenApiExemptions(["L"]).
+        boolean bypassed = bypassHiddenApiRestrictions();
+        out("DEBUG hidden-api-bypass=" + bypassed);
+
+        // Now BinderInternal is reachable; start its thread pool so AMS / WMS
+        // callbacks have a worker. Without this, attach() and addView() hang
+        // until the caller times out and SIGKILLs us.
         startBinderThreadPool();
 
         try {
@@ -59,6 +66,34 @@ public final class Helper {
         } catch (Throwable t) {
             out("FATAL " + describe(t));
             System.exit(1);
+        }
+    }
+
+    private static boolean bypassHiddenApiRestrictions() {
+        try {
+            // Step 1 — meta-reflection: pull Class.getDeclaredMethod out
+            // via Class.class itself. The reflective access check then
+            // sees the JDK as the "caller" and lets us look up @hide
+            // methods on other classes.
+            java.lang.reflect.Method getDeclaredMethod = Class.class
+                    .getDeclaredMethod("getDeclaredMethod", String.class, Class[].class);
+
+            // Step 2 — resolve VMRuntime via that meta-handle.
+            Class<?> vmRuntimeClass = Class.forName("dalvik.system.VMRuntime");
+
+            java.lang.reflect.Method getRuntime = (java.lang.reflect.Method)
+                    getDeclaredMethod.invoke(vmRuntimeClass, "getRuntime", new Class<?>[0]);
+            java.lang.reflect.Method setHiddenApiExemptions = (java.lang.reflect.Method)
+                    getDeclaredMethod.invoke(vmRuntimeClass, "setHiddenApiExemptions",
+                            new Class<?>[]{ String[].class });
+
+            Object vmRuntime = getRuntime.invoke(null);
+            // "L" prefixes every Java class type signature → exempt everything.
+            setHiddenApiExemptions.invoke(vmRuntime, (Object) new String[]{ "L" });
+            return true;
+        } catch (Throwable t) {
+            out("DEBUG bypass-failed " + t.getClass().getSimpleName() + " " + t.getMessage());
+            return false;
         }
     }
 
