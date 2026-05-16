@@ -81,8 +81,10 @@ int main() {
     io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
 
     ImGui::StyleColorsDark();
-    ImGui::GetStyle().ScaleAllSizes(2.5f);
     aimgui::LoadDefaultAndSystemCJKFont(22.0f);
+    // The UI layer applies its own (touch-sized) style values; see
+    // ApplyStyleOnce() in ui.cpp. Doing the scaling there keeps the
+    // numbers consistent with the layout assumptions.
 
     aimgui::UiState st;
 
