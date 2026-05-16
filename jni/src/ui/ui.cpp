@@ -1,6 +1,5 @@
 #include "ui/ui.h"
 
-#include "core/ime_bridge.h"
 #include "imgui.h"
 
 #include <cmath>
@@ -10,21 +9,20 @@ namespace aimgui {
 
 namespace {
 
-// ─── Navigation pages ────────────────────────────────────────────────────
 enum class Page { Dashboard, Widgets, Window, Performance, About };
 
 struct PageItem { Page id; const char* label; };
 constexpr PageItem kPages[] = {
-    { Page::Dashboard,   "Dashboard"   },
-    { Page::Widgets,     "Widgets"     },
-    { Page::Window,      "Window"      },
-    { Page::Performance, "Performance" },
-    { Page::About,       "About"       },
+    { Page::Dashboard,   u8"概览"      },
+    { Page::Widgets,     u8"控件"      },
+    { Page::Window,      u8"窗口"      },
+    { Page::Performance, u8"性能"      },
+    { Page::About,       u8"关于"      },
 };
 
 constexpr int kFpsPresets[] = { 0, 30, 60, 90, 120, 144 };
 constexpr const char* kFpsLabels =
-    "vsync\0" "30\0" "60\0" "90\0" "120\0" "144\0";
+    u8"垂直同步\0" "30\0" "60\0" "90\0" "120\0" "144\0";
 
 int FpsToIndex(int fps) {
     for (int i = 0; i < IM_ARRAYSIZE(kFpsPresets); ++i)
@@ -57,7 +55,7 @@ void ApplyStyleOnce() {
 
 void KV(const char* key, const char* fmt, ...) {
     ImGui::TextDisabled("%s", key);
-    ImGui::SameLine(180.0f);
+    ImGui::SameLine(200.0f);
     va_list args;
     va_start(args, fmt);
     ImGui::TextV(fmt, args);
@@ -66,55 +64,46 @@ void KV(const char* key, const char* fmt, ...) {
 
 // ─── Page contents ───────────────────────────────────────────────────────
 void DrawDashboard(const UiState* state) {
-    ImGui::SeparatorText("Overview");
+    ImGui::SeparatorText(u8"概览");
 
-    KV("renderer",       "%s", state->renderer_name ? state->renderer_name : "?");
-    KV("ImGui",          "%s", ImGui::GetVersion());
-    KV("frame",          "%.1f FPS  (%.2f ms)",
-                          ImGui::GetIO().Framerate,
-                          1000.0f / ImGui::GetIO().Framerate);
-    KV("anti-recording", "%s", state->permeate_record ? "on" : "off");
+    KV(u8"渲染后端",   "%s", state->renderer_name ? state->renderer_name : "?");
+    KV(u8"ImGui 版本", "%s", ImGui::GetVersion());
+    KV(u8"帧率",       "%.1f FPS  (%.2f ms)",
+                       ImGui::GetIO().Framerate,
+                       1000.0f / ImGui::GetIO().Framerate);
+    KV(u8"防录屏",     "%s", state->permeate_record ? u8"已开启" : u8"已关闭");
 
     ImGui::Spacing();
-    ImGui::SeparatorText("Tips");
-    ImGui::TextWrapped("Press a volume button to fold the window into a "
-                       "Dynamic Island at the top of the screen; tap the "
-                       "island or press a volume button again to expand it back.");
+    ImGui::SeparatorText(u8"提示");
+    ImGui::TextWrapped(u8"按音量键可以把窗口折叠成屏幕顶部的灵动岛，再按一次或点击灵动岛展开回来。");
 }
 
 void DrawWidgets() {
-    ImGui::SeparatorText("Basic widgets");
+    ImGui::SeparatorText(u8"基础控件");
 
     static int    counter = 0;
     static float  slider  = 0.5f;
     static bool   toggle  = false;
     static ImVec4 tint(0.40f, 0.70f, 1.00f, 1.0f);
 
-    if (ImGui::Button("tap me")) counter++;
+    if (ImGui::Button(u8"点我"))  counter++;
     ImGui::SameLine();
-    ImGui::Text("count = %d", counter);
+    ImGui::Text(u8"计数 = %d", counter);
 
-    static char text[128] = "tap me, then a soft keyboard pops up";
-    ImGui::InputText("text", text, IM_ARRAYSIZE(text));
-    ImGui::TextDisabled("IME bridge: %s",
-                        ime::IsRunning() ? "ready (Java helper attached)"
-                                         : "off (push AImGui.dex next to the ELF)");
-
-    ImGui::SliderFloat("slider", &slider, 0.0f, 1.0f, "%.3f");
-    ImGui::Checkbox("toggle",  &toggle);
-    ImGui::ColorEdit4("color", (float*)&tint);
+    ImGui::SliderFloat(u8"滑块",   &slider, 0.0f, 1.0f, "%.3f");
+    ImGui::Checkbox  (u8"开关",   &toggle);
+    ImGui::ColorEdit4(u8"取色器", (float*)&tint);
 
     ImGui::Spacing();
-    ImGui::SeparatorText("List");
+    ImGui::SeparatorText(u8"列表");
     static int selected = -1;
-    for (int i = 0; i < 4; ++i) {
-        char label[32];
-        std::snprintf(label, sizeof(label), "item %d", i);
-        if (ImGui::Selectable(label, selected == i)) selected = i;
+    const char* items[] = { u8"第一项", u8"第二项", u8"第三项", u8"第四项" };
+    for (int i = 0; i < IM_ARRAYSIZE(items); ++i) {
+        if (ImGui::Selectable(items[i], selected == i)) selected = i;
     }
 
     ImGui::Spacing();
-    ImGui::SeparatorText("Progress");
+    ImGui::SeparatorText(u8"进度");
     static float progress = 0.0f;
     progress += ImGui::GetIO().DeltaTime * 0.15f;
     if (progress > 1.0f) progress -= 1.0f;
@@ -122,23 +111,23 @@ void DrawWidgets() {
 }
 
 void DrawWindow(UiState* state) {
-    ImGui::SeparatorText("Surface");
+    ImGui::SeparatorText(u8"窗口表面");
 
     bool perm = state->permeate_record;
-    if (ImGui::Checkbox("anti-recording (hide from capture / cast)", &perm)) {
+    if (ImGui::Checkbox(u8"防录屏(对屏幕录制 / 投屏隐藏)", &perm)) {
         state->request_permeate_toggle = true;
     }
     ImGui::SameLine();
-    ImGui::TextDisabled("[%s]", state->permeate_record ? "on" : "off");
+    ImGui::TextDisabled("[%s]", state->permeate_record ? u8"已开启" : u8"已关闭");
 
     ImGui::TextWrapped(
-        "When on, the SurfaceFlinger layer is created with the secure / "
-        "skipScreenshot flag, so screen recordings and casts won't see it.");
+        u8"开启后，SurfaceFlinger 图层使用 skipScreenshot 标志创建，"
+        u8"屏幕录制和投屏不会捕获到本窗口。");
 
     ImGui::Spacing();
-    ImGui::SeparatorText("Theme");
+    ImGui::SeparatorText(u8"主题");
     static int theme = 0;
-    if (ImGui::Combo("##theme", &theme, "dark\0light\0classic\0")) {
+    if (ImGui::Combo(u8"##theme", &theme, u8"深色\0浅色\0经典\0")) {
         switch (theme) {
             case 0: ImGui::StyleColorsDark();    break;
             case 1: ImGui::StyleColorsLight();   break;
@@ -148,19 +137,19 @@ void DrawWindow(UiState* state) {
 }
 
 void DrawPerformance(UiState* state) {
-    ImGui::SeparatorText("Frame-rate cap");
+    ImGui::SeparatorText(u8"帧率限制");
 
     int fps_idx = FpsToIndex(state->target_fps);
-    if (ImGui::Combo("target", &fps_idx, kFpsLabels)) {
+    if (ImGui::Combo(u8"目标帧率", &fps_idx, kFpsLabels)) {
         state->target_fps = kFpsPresets[fps_idx];
     }
 
     ImGui::Spacing();
-    KV("current",    "%.1f FPS", ImGui::GetIO().Framerate);
-    KV("frame time", "%.2f ms",  1000.0f / ImGui::GetIO().Framerate);
+    KV(u8"当前帧率", "%.1f FPS", ImGui::GetIO().Framerate);
+    KV(u8"帧时间",   "%.2f ms",  1000.0f / ImGui::GetIO().Framerate);
 
     ImGui::Spacing();
-    ImGui::SeparatorText("Rolling FPS");
+    ImGui::SeparatorText(u8"帧率曲线");
 
     constexpr int N = 240;
     static float history[N] = {};
@@ -176,25 +165,25 @@ void DrawPerformance(UiState* state) {
 
 void DrawAbout() {
     ImGui::SeparatorText("AImGui");
-    ImGui::TextWrapped("A minimal Dear ImGui Android ARM64 ELF — no JNI, no APK, "
-                       "no Activity. Runs as a native binary on top of "
-                       "SurfaceFlinger.");
+    ImGui::TextWrapped(u8"一个极简的 Dear ImGui Android ARM64 ELF —— "
+                       u8"无 JNI、无 APK、无 Activity，直接以原生二进制运行在 SurfaceFlinger 之上。");
 
     ImGui::Spacing();
-    ImGui::SeparatorText("Features");
-    ImGui::BulletText("Dear ImGui %s", ImGui::GetVersion());
-    ImGui::BulletText("Vulkan + OpenGL ES 3 auto-fallback");
-    ImGui::BulletText("VSync-locked frame pacer, near-zero CPU spin");
-    ImGui::BulletText("Observe-only touch (no /dev/uinput, system unaffected)");
-    ImGui::BulletText("Anti-recording surface toggle");
-    ImGui::BulletText("Volume-key Dynamic Island fold");
+    ImGui::SeparatorText(u8"特性");
+    ImGui::BulletText(u8"Dear ImGui %s", ImGui::GetVersion());
+    ImGui::BulletText(u8"Vulkan + OpenGL ES 3 自动回落");
+    ImGui::BulletText(u8"VSync 锁帧的弹簧帧率器，几乎不烧 CPU");
+    ImGui::BulletText(u8"只读触摸 (不创建 /dev/uinput，不影响系统)");
+    ImGui::BulletText(u8"防录屏 SurfaceFlinger 标志");
+    ImGui::BulletText(u8"音量键折叠/展开灵动岛");
+    ImGui::BulletText(u8"自动加载系统中文字体 (NotoSansCJK / MiSans / HwChinese ...)");
 }
 
 // ─── Sidebar ─────────────────────────────────────────────────────────────
 void DrawSidebar(Page& current, bool* keep_running, const UiState* state) {
     constexpr float kInnerPadX     = 18.0f;
     constexpr float kInnerPadY     = 14.0f;
-    constexpr float kSelectableH   = 42.0f;
+    constexpr float kSelectableH   = 44.0f;
     constexpr float kAccentInset   = 10.0f;
     constexpr float kAccentW       = 4.0f;
     constexpr float kFooterH       = 110.0f;
@@ -214,7 +203,6 @@ void DrawSidebar(Page& current, bool* keep_running, const UiState* state) {
                       ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding,
                       ImGuiWindowFlags_NoScrollbar);
 
-    // Nav items, accent on the active one.
     const ImU32 accent = ImGui::GetColorU32(ImVec4(0.30f, 0.62f, 1.0f, 1.0f));
     for (const auto& p : kPages) {
         bool selected = (current == p.id);
@@ -231,7 +219,6 @@ void DrawSidebar(Page& current, bool* keep_running, const UiState* state) {
         }
     }
 
-    // Footer pinned at the bottom, with breathing room before the screen edge.
     float remaining = ImGui::GetWindowHeight() - ImGui::GetCursorPosY() - kFooterH - kBottomMargin;
     if (remaining > 0) ImGui::Dummy(ImVec2(0, remaining));
 
@@ -241,10 +228,9 @@ void DrawSidebar(Page& current, bool* keep_running, const UiState* state) {
     ImGui::Spacing();
 
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 12));
-    if (ImGui::Button("exit", ImVec2(-1, 0))) *keep_running = false;
+    if (ImGui::Button(u8"退出", ImVec2(-1, 0))) *keep_running = false;
     ImGui::PopStyleVar();
 
-    // Extra bottom margin so the button doesn't kiss the screen edge.
     ImGui::Dummy(ImVec2(0, kBottomMargin));
 
     ImGui::EndChild();
@@ -282,11 +268,10 @@ void DrawIslandContent() {
     ImGui::TextUnformatted(buf);
 }
 
-// Critically-ish damped spring: pos chases target, mild overshoot for the
-// "sticky / 灵动" feel.
+// Critically-ish damped spring with mild overshoot for the "灵动" feel.
 void UpdateSpring(float* pos, float* vel, float target, float dt) {
-    constexpr float kOmega = 12.0f;   // natural frequency
-    constexpr float kZeta  = 0.82f;   // damping ratio (<1 = bouncy)
+    constexpr float kOmega = 12.0f;
+    constexpr float kZeta  = 0.82f;
     const float diff  = target - *pos;
     const float accel = kOmega * kOmega * diff - 2.0f * kZeta * kOmega * (*vel);
     *vel += accel * dt;
@@ -305,13 +290,11 @@ void DrawUi(UiState* state, bool* keep_running) {
     ImGuiIO& io = ImGui::GetIO();
     const float dt = io.DeltaTime > 0.0f ? io.DeltaTime : 1.0f / 60.0f;
 
-    // ── Spring-driven expand/collapse animation ──────────────────────
     const float target = state->collapsed ? 0.0f : 1.0f;
     UpdateSpring(&state->expand, &state->expand_vel, target, dt);
     const float t = state->expand;
-    const float lt = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);  // clamped for layout
+    const float lt = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
 
-    // ── Geometry: island top-center, lerping to/from full window ─────
     constexpr float kIslandW   = 280.0f;
     constexpr float kIslandH   = 56.0f;
     constexpr float kIslandTop = 28.0f;
@@ -326,8 +309,6 @@ void DrawUi(UiState* state, bool* keep_running) {
     const ImVec2 win_pos  = lerp(island_pos,  state->last_full_pos,  lt);
     const ImVec2 win_size = lerp(island_size, state->last_full_size, lt);
 
-    // Animation in flight: pin position / size every frame. Fully
-    // expanded: let ImGui keep the user's drag position.
     const bool show_chrome    = (lt > 0.55f);
     const bool overriding_pos = (lt < 0.999f);
 
@@ -340,7 +321,6 @@ void DrawUi(UiState* state, bool* keep_running) {
         ImGui::SetNextWindowSizeConstraints(ImVec2(700, 560), ImVec2(FLT_MAX, FLT_MAX));
     }
 
-    // Pill ↔ rounded rectangle: rounding lerps with the morph.
     const float rounding = (kIslandH * 0.5f) * (1.0f - lt) + 12.0f * lt;
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, rounding);
 
@@ -353,26 +333,22 @@ void DrawUi(UiState* state, bool* keep_running) {
     std::snprintf(title, sizeof(title), "AImGui  v%s###aimgui_main", ImGui::GetVersion());
 
     if (ImGui::Begin(title, show_chrome ? keep_running : nullptr, flags)) {
-        // Remember the user's drag position whenever we're fully expanded.
         if (lt >= 0.999f && !state->collapsed) {
             state->last_full_pos  = ImGui::GetWindowPos();
             state->last_full_size = ImGui::GetWindowSize();
         }
 
-        // ── Island content (FPS centered, fades out as we expand) ─
         const float island_alpha = 1.0f - (lt < 0.30f ? lt / 0.30f : 1.0f);
         if (island_alpha > 0.01f) {
             ImGui::PushStyleVar(ImGuiStyleVar_Alpha, island_alpha);
             DrawIslandContent();
             ImGui::PopStyleVar();
 
-            // Tap the pill to expand back.
             if (!show_chrome && ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0)) {
                 state->collapsed = false;
             }
         }
 
-        // ── Full UI (fades in late in the morph) ──────────────────
         const float full_alpha = lt > 0.70f ? (lt - 0.70f) / 0.30f : 0.0f;
         if (full_alpha > 0.01f) {
             ImGui::PushStyleVar(ImGuiStyleVar_Alpha, full_alpha);

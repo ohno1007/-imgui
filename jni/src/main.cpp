@@ -1,6 +1,5 @@
 // AImGui: a minimal Dear ImGui Android ARM64 ELF.
 #include "core/font.h"
-#include "core/ime_bridge.h"
 #include "core/keyboard_input.h"
 #include "core/renderer.h"
 #include "imgui.h"
@@ -9,11 +8,7 @@
 #include "ui/ui.h"
 
 #include <chrono>
-#include <climits>
-#include <csignal>
-#include <string>
 #include <thread>
-#include <unistd.h>
 
 namespace {
 
@@ -68,11 +63,6 @@ int main() {
     using namespace android;
     using clock = std::chrono::steady_clock;
 
-    // The IME bridge writes to a pipe whose other end may die at any time
-    // (Java helper failing to start, killed externally, etc). Without this
-    // the very first write() after the child dies kills us with SIGPIPE.
-    ::signal(SIGPIPE, SIG_IGN);
-
     auto info = ANativeWindowCreator::GetDisplayInfo();
     const int W = info.width  > info.height ? info.width  : info.height;
     const int H = info.width  > info.height ? info.height : info.width;
@@ -104,23 +94,6 @@ int main() {
 
     aimgui::kbd_input::Init();
 
-    // Optional Java helper for system IME input. Look for AImGui.dex
-    // sitting next to our ELF (e.g. /data/AImGui  ↔  /data/AImGui.dex).
-    // If app_process refuses to launch or the dex isn't there we silently
-    // carry on — everything else still works.
-    {
-        char exe[PATH_MAX];
-        ssize_t n = ::readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-        std::string dex_path = "/data/local/tmp/AImGui.dex";
-        if (n > 0) {
-            exe[n] = '\0';
-            dex_path = std::string(exe) + ".dex";
-        }
-        aimgui::ime::Init(dex_path.c_str());
-    }
-
-    bool prev_want_text = false;
-
     auto last = clock::now();
     bool running = true;
     uint32_t cached_orientation = info.orientation;
@@ -143,7 +116,6 @@ int main() {
             Touch::setOrientation((int)info.orientation);
         }
 
-        // Volume key toggles full ↔ island.
         if (aimgui::kbd_input::ConsumeVolumePresses() > 0) {
             st.collapsed = !st.collapsed;
         }
@@ -153,31 +125,11 @@ int main() {
         }
 
         aimgui::kbd_input::Flush();
-        aimgui::ime::Flush();
-
-        // While the soft keyboard is on screen, the IME catches the user's
-        // taps in its own area — but we ALSO see those /dev/input events,
-        // and ImGui would interpret a tap outside the active InputText as
-        // "deactivate". Mask mouse input for the duration so the ImGui
-        // InputText stays the live target for incoming characters.
-        if (aimgui::ime::IsImeVisible() || io.WantTextInput) {
-            io.ConfigFlags |=  ImGuiConfigFlags_NoMouse;
-        } else {
-            io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
-        }
 
         ctx.renderer->NewFrame();
         ImGui::NewFrame();
         aimgui::DrawUi(&st, &running);
         ctx.renderer->EndFrame();
-
-        // Bring the system IME up / down to follow ImGui's text-input focus.
-        const bool want_text = io.WantTextInput;
-        if (want_text != prev_want_text) {
-            if (want_text) aimgui::ime::Show();
-            else           aimgui::ime::Hide();
-            prev_want_text = want_text;
-        }
 
         pacer.Wait();
 
@@ -193,7 +145,6 @@ int main() {
         }
     }
 
-    aimgui::ime::Shutdown();
     aimgui::kbd_input::Shutdown();
     DestroyWindow(&ctx);
     ImGui::DestroyContext();
