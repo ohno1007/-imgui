@@ -244,7 +244,7 @@ void BloomGL::EndSceneAndComposite() {
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, m_BlurTex[0]);
     glUniform1i(m_LocCompBloom, 1);
-    glUniform1f(m_LocCompIntens, 0.75f);
+    glUniform1f(m_LocCompIntens, m_Intensity);
     glDrawArrays(GL_TRIANGLES, 0, 6);
 
     glBindVertexArray(0);

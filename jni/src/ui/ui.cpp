@@ -230,6 +230,13 @@ void DrawWidgets() {
                 list_full_h = y_end - y_start;
             }
             ImGui::EndChild();
+
+            // ImGui adds a full ItemSpacing.y after EndChild regardless of
+            // child height; without this adjustment the gap before the next
+            // section would snap by one ItemSpacing.y at the moment we
+            // stopped drawing the child, producing a visible "卡一下".
+            const float spacing_y = ImGui::GetStyle().ItemSpacing.y;
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() - (1.0f - list_t) * spacing_y);
         }
     }
 
@@ -254,6 +261,13 @@ void DrawWindow(UiState* state) {
     ImGui::TextWrapped(
         u8"开启后，SurfaceFlinger 图层使用 skipScreenshot 标志创建，"
         u8"屏幕录制和投屏不会捕获到本窗口。");
+
+    ImGui::Spacing();
+    ImGui::SeparatorText(u8"辉光");
+    SliderFloatGrabValue(u8"辉光强度", &state->bloom_intensity, 0.0f, 2.5f, "%.2f");
+    ImGui::TextWrapped(
+        u8"调到 0 关闭后处理；默认 0.75。亮元素（白字、蓝高亮）会按"
+        u8"luma > 0.6 阈值参与抽亮、双 pass 高斯模糊后回叠到画面上。");
 
     ImGui::Spacing();
     ImGui::SeparatorText(u8"主题");

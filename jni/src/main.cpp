@@ -129,6 +129,7 @@ int main() {
         ctx.renderer->NewFrame();
         ImGui::NewFrame();
         aimgui::DrawUi(&st, &running);
+        ctx.renderer->SetBloomIntensity(st.bloom_intensity);
         ctx.renderer->EndFrame();
 
         pacer.Wait();

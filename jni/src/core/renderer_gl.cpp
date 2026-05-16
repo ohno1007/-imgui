@@ -100,6 +100,8 @@ public:
 
     const char* Name() const override { return "OpenGL ES 3"; }
 
+    void SetBloomIntensity(float i) override { m_Bloom.SetIntensity(i); }
+
 private:
     ANativeWindow* m_Window = nullptr;
     EGLDisplay m_Display = EGL_NO_DISPLAY;

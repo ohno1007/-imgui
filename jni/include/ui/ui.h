@@ -35,6 +35,9 @@ struct UiState {
     // wherever the user last dragged it.
     ImVec2 last_full_pos  = ImVec2(60, 100);
     ImVec2 last_full_size = ImVec2(900, 620);
+
+    // Post-process bloom intensity, applied at composite. 0 = bloom off.
+    float bloom_intensity = 0.75f;
 };
 
 void DrawUi(UiState* state, bool* keep_running);

@@ -100,6 +100,8 @@ public:
 
     const char* Name() const override { return "Vulkan"; }
 
+    void SetBloomIntensity(float i) override { m_Bloom.SetIntensity(i); }
+
 private:
     bool CreateInstance() {
         const char* exts[] = { "VK_KHR_surface", "VK_KHR_android_surface" };

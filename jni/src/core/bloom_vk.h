@@ -43,6 +43,8 @@ public:
     void Shutdown();
     bool Ready() const { return m_Ready; }
 
+    void SetIntensity(float i) { m_Intensity = i; }
+
     VkRenderPass GetSceneRenderPass() const { return m_SceneRP; }
 
     // Records the bloom composite pipeline. Caller must have an active
@@ -61,6 +63,7 @@ private:
     VkFormat         m_Format = VK_FORMAT_UNDEFINED;
     uint32_t         m_W = 0, m_H = 0;
     uint32_t         m_BW = 0, m_BH = 0;
+    float            m_Intensity = 0.75f;
 
     VkRenderPass     m_SceneRP = VK_NULL_HANDLE;
     VkRenderPass     m_BlurRP  = VK_NULL_HANDLE;

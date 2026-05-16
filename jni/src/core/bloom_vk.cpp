@@ -433,7 +433,7 @@ void BloomVK::RecordCompositeDraw(VkCommandBuffer cmd) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipeComp);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PLB, 0, 1, &m_DSComp, 0, nullptr);
     PushConsts pc{};
-    pc.intensity = 0.75f;
+    pc.intensity = m_Intensity;
     vkCmdPushConstants(cmd, m_PLB, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
     vkCmdDraw(cmd, 3, 1, 0, 0);
 }

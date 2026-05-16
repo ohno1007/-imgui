@@ -13,6 +13,10 @@ public:
     virtual void EndFrame() = 0;
     virtual void Shutdown() = 0;
     virtual const char* Name() const = 0;
+
+    // Post-process bloom intensity (0 = off, ~1 = strong). No-op if the
+    // backend's bloom isn't ready.
+    virtual void SetBloomIntensity(float intensity) = 0;
 };
 
 enum class Backend { Auto, Vulkan, OpenGL };

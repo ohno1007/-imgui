@@ -25,6 +25,8 @@ public:
     void Shutdown();
     bool Ready() const { return m_Ready; }
 
+    void SetIntensity(float i) { m_Intensity = i; }
+
     void BeginScene();
     void EndSceneAndComposite();
 
@@ -34,6 +36,7 @@ private:
     int  m_Height = 0;
     int  m_BlurW  = 0;
     int  m_BlurH  = 0;
+    float m_Intensity = 0.75f;
 
     GLuint m_SceneFBO   = 0;
     GLuint m_SceneTex   = 0;
