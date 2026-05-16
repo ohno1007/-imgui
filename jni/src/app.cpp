@@ -2,28 +2,16 @@
 
 #include "imgui.h"
 
-#include <cstdio>
-
 namespace aimgui {
 
-namespace {
-char g_RendererName[32] = {};
-}
-
-void AppInit(const char* renderer_name) {
-    if (renderer_name) {
-        std::snprintf(g_RendererName, sizeof(g_RendererName), "%s", renderer_name);
-    }
-}
-
-void AppFrame(bool* keep_running) {
+void AppFrame(AppState* state, bool* keep_running) {
     ImGui::SetNextWindowPos(ImVec2(60, 100), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(620, 360), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(620, 380), ImGuiCond_FirstUseEver);
 
     ImGui::Begin(u8"AImGui  -  迷你 ImGui 框架", keep_running);
 
     ImGui::Text("Dear ImGui %s", ImGui::GetVersion());
-    ImGui::Text(u8"渲染后端: %s", g_RendererName[0] ? g_RendererName : "?");
+    ImGui::Text(u8"渲染后端: %s", state->renderer_name ? state->renderer_name : "?");
     ImGui::Separator();
 
     static int counter = 0;
@@ -38,6 +26,17 @@ void AppFrame(bool* keep_running) {
     ImGui::SliderFloat(u8"滑块", &slider, 0.0f, 1.0f);
     ImGui::Checkbox(u8"开关", &toggle);
     ImGui::ColorEdit4(u8"取色器", (float*)&tint);
+
+    ImGui::Spacing();
+
+    // Anti-recording toggle. Flipping it asks main loop to rebuild the
+    // SurfaceFlinger window with the secure / skipScreenshot flag.
+    bool perm = state->permeate_record;
+    if (ImGui::Checkbox(u8"防录屏 (穿透屏幕录制 / 投屏)", &perm)) {
+        state->request_permeate_toggle = true;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled(u8"%s", state->permeate_record ? u8"已开启" : u8"已关闭");
 
     ImGui::Spacing();
     ImGui::TextDisabled(u8"拖动标题栏可移动窗口。");

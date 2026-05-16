@@ -9,18 +9,38 @@
 #include <chrono>
 #include <thread>
 
+namespace {
+
+struct WindowCtx {
+    ANativeWindow* window = nullptr;
+    std::unique_ptr<aimgui::IRenderer> renderer;
+};
+
+bool BuildWindow(WindowCtx* ctx, int W, int H, bool permeate_record) {
+    ctx->window = android::ANativeWindowCreator::Create("AImGui", W, W, permeate_record);
+    if (!ctx->window) return false;
+    ctx->renderer = aimgui::MakeRenderer(ctx->window, W, W, aimgui::Backend::Auto);
+    if (!ctx->renderer) {
+        android::ANativeWindowCreator::Destroy(ctx->window);
+        ctx->window = nullptr;
+        return false;
+    }
+    return true;
+}
+
+void DestroyWindow(WindowCtx* ctx) {
+    if (ctx->renderer) { ctx->renderer->Shutdown(); ctx->renderer.reset(); }
+    if (ctx->window)   { android::ANativeWindowCreator::Destroy(ctx->window); ctx->window = nullptr; }
+}
+
+} // namespace
+
 int main() {
     using namespace android;
-    using aimgui::Backend;
-    using aimgui::IRenderer;
-    using aimgui::MakeRenderer;
 
     auto info = ANativeWindowCreator::GetDisplayInfo();
     const int W = info.width  > info.height ? info.width  : info.height;
     const int H = info.width  > info.height ? info.height : info.width;
-
-    ANativeWindow* window = ANativeWindowCreator::Create("AImGui", W, W, false);
-    if (!window) return 1;
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -34,18 +54,18 @@ int main() {
     ImGui::GetStyle().ScaleAllSizes(2.5f);
     aimgui::LoadDefaultAndSystemCJKFont(22.0f);
 
-    // Auto-pick: Vulkan first, OpenGL ES 3 fallback.
-    std::unique_ptr<IRenderer> renderer = MakeRenderer(window, W, W, Backend::Auto);
-    if (!renderer) {
+    aimgui::AppState st;
+    st.permeate_record = false;
+
+    WindowCtx ctx;
+    if (!BuildWindow(&ctx, W, H, st.permeate_record)) {
         ImGui::DestroyContext();
-        ANativeWindowCreator::Destroy(window);
-        return 2;
+        return 1;
     }
+    st.renderer_name = ctx.renderer->Name();
 
     Touch::Init({(float)W, (float)H}, false);
     Touch::setOrientation((int)info.orientation);
-
-    aimgui::AppInit(renderer->Name());
 
     using clock = std::chrono::steady_clock;
     auto last = clock::now();
@@ -68,16 +88,34 @@ int main() {
             Touch::setOrientation((int)info.orientation);
         }
 
-        ANativeWindowCreator::ProcessMirrorDisplay();
+        // Mirror display has to be processed only when our surface is visible
+        // to recordings; when permeate_record is on, skip it.
+        if (!st.permeate_record) {
+            ANativeWindowCreator::ProcessMirrorDisplay();
+        }
 
-        renderer->NewFrame();
+        ctx.renderer->NewFrame();
         ImGui::NewFrame();
-        aimgui::AppFrame(&running);
-        renderer->EndFrame();
+        aimgui::AppFrame(&st, &running);
+        ctx.renderer->EndFrame();
+
+        // Handle anti-record toggle requested from UI: tear down and rebuild.
+        if (st.request_permeate_toggle) {
+            st.request_permeate_toggle = false;
+            st.permeate_record = !st.permeate_record;
+
+            DestroyWindow(&ctx);
+            if (!BuildWindow(&ctx, W, H, st.permeate_record)) {
+                running = false;
+                break;
+            }
+            st.renderer_name = ctx.renderer->Name();
+            // The font atlas survives in ImGui context; the new renderer
+            // backend will lazily re-upload it on next frame.
+        }
     }
 
-    renderer->Shutdown();
+    DestroyWindow(&ctx);
     ImGui::DestroyContext();
-    ANativeWindowCreator::Destroy(window);
     return 0;
 }

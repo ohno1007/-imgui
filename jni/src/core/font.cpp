@@ -2,19 +2,40 @@
 
 #include "imgui.h"
 
+#include <android/log.h>
 #include <unistd.h>
+
+#define LOG_TAG "AImGui_Font"
+#define LOGI(fmt, ...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, fmt, ##__VA_ARGS__)
+#define LOGW(fmt, ...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, fmt, ##__VA_ARGS__)
 
 namespace aimgui {
 
 namespace {
 
+// Candidate system fonts, in priority order. First readable path wins.
 const char* kFontCandidates[] = {
+    // AOSP / Pixel / generic
     "/system/fonts/NotoSansCJK-Regular.ttc",
     "/system/fonts/NotoSerifCJK-Regular.ttc",
     "/system/fonts/NotoSansCJKsc-Regular.otf",
-    "/system/fonts/DroidSansFallbackFull.ttf",
-    "/system/fonts/DroidSansFallback.ttf",
+    "/system/fonts/NotoSansCJKjp-Regular.otf",
     "/system/fonts/NotoSansSC-Regular.otf",
+    "/system/fonts/NotoSansSC-Regular.ttf",
+    // OEM-specific CJK fonts
+    "/system/fonts/MiSans-Regular.ttf",          // Xiaomi
+    "/system/fonts/MiLanProVF.ttf",
+    "/system/fonts/HYQiHei.ttf",                 // some Vivo / Oppo
+    "/system/fonts/HONOR Sans-Regular.ttf",
+    "/system/fonts/HwChinese-Medium.ttf",        // Huawei
+    "/system/fonts/HwChinese-Regular.ttf",
+    "/system/fonts/HarmonyOS_Sans_SC_Regular.ttf",
+    // Legacy
+    "/system/fonts/DroidSansFallback.ttf",
+    "/system/fonts/DroidSansFallbackFull.ttf",
+    // Mounted under /product on newer A/B partitioned devices
+    "/product/fonts/NotoSansCJK-Regular.ttc",
+    "/product/fonts/NotoSerifCJK-Regular.ttc",
     nullptr,
 };
 
@@ -25,16 +46,17 @@ const char* FindSystemFont() {
     return nullptr;
 }
 
-const ImWchar* MinimalCJKRanges() {
-    // Light-weight range: ASCII + CJK Unified Ideographs + CJK Symbols
-    // (~21k glyphs at most; ImGui rasterizes lazily so atlas stays small).
+// A reasonable Chinese-friendly range: ASCII + CJK Unified Ideographs +
+// common punctuation. ImGui 1.92 rasterizes glyphs lazily so listing this
+// range doesn't cost atlas space up front.
+const ImWchar* CJKRanges() {
     static const ImWchar ranges[] = {
-        0x0020, 0x00FF,
-        0x2000, 0x206F,
-        0x3000, 0x30FF,
-        0x31F0, 0x31FF,
-        0x4E00, 0x9FFF,
-        0xFF00, 0xFFEF,
+        0x0020, 0x00FF, // Basic Latin + Latin-1 Supplement
+        0x2000, 0x206F, // General Punctuation
+        0x3000, 0x30FF, // CJK Symbols & Punctuation, Hiragana, Katakana
+        0x31F0, 0x31FF, // Katakana Phonetic Extensions
+        0x4E00, 0x9FFF, // CJK Unified Ideographs
+        0xFF00, 0xFFEF, // Half-/full-width forms
         0,
     };
     return ranges;
@@ -45,21 +67,24 @@ const ImWchar* MinimalCJKRanges() {
 ImFont* LoadDefaultAndSystemCJKFont(float size_pixels) {
     ImGuiIO& io = ImGui::GetIO();
 
-    ImFontConfig base;
-    base.SizePixels = size_pixels;
-    base.OversampleH = base.OversampleV = 1;
-    ImFont* font = io.Fonts->AddFontDefault(&base);
-
     if (const char* path = FindSystemFont()) {
-        ImFontConfig merge;
-        merge.MergeMode = true;
-        merge.SizePixels = size_pixels;
-        merge.PixelSnapH = true;
-        merge.OversampleH = merge.OversampleV = 1;
-        ImFont* cjk = io.Fonts->AddFontFromFileTTF(path, size_pixels, &merge, MinimalCJKRanges());
-        if (cjk) font = cjk;
+        ImFontConfig cfg;
+        cfg.SizePixels  = size_pixels;
+        cfg.PixelSnapH  = true;
+        cfg.OversampleH = 1;
+        cfg.OversampleV = 1;
+        if (ImFont* f = io.Fonts->AddFontFromFileTTF(path, size_pixels, &cfg, CJKRanges())) {
+            LOGI("loaded system CJK font: %s (%.1fpx)", path, size_pixels);
+            return f;
+        }
+        LOGW("AddFontFromFileTTF failed for %s", path);
+    } else {
+        LOGW("no /system/fonts CJK candidate found");
     }
-    return font;
+
+    ImFontConfig cfg;
+    cfg.SizePixels = size_pixels;
+    return io.Fonts->AddFontDefault(&cfg);
 }
 
 } // namespace aimgui
