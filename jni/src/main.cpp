@@ -1,5 +1,6 @@
 // AImGui: a minimal Dear ImGui Android ARM64 ELF.
 #include "core/font.h"
+#include "core/keyboard_input.h"
 #include "core/renderer.h"
 #include "imgui.h"
 #include "platform/ANativeWindowCreator.h"
@@ -98,6 +99,8 @@ int main() {
     Touch::Init({(float)W, (float)H}, false);
     Touch::setOrientation((int)info.orientation);
 
+    aimgui::kbd_input::Init();
+
     auto last = clock::now();
     bool running = true;
     uint32_t cached_orientation = info.orientation;
@@ -121,6 +124,8 @@ int main() {
             ANativeWindowCreator::ProcessMirrorDisplay();
         }
 
+        aimgui::kbd_input::Flush();
+
         ctx.renderer->NewFrame();
         ImGui::NewFrame();
         aimgui::DrawUi(&st, &running);
@@ -141,6 +146,7 @@ int main() {
         }
     }
 
+    aimgui::kbd_input::Shutdown();
     DestroyWindow(&ctx);
     ImGui::DestroyContext();
     return 0;

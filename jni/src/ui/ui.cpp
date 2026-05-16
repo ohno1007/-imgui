@@ -190,11 +190,20 @@ void DrawAbout() {
 
 // ─── Sidebar ─────────────────────────────────────────────────────────────
 void DrawSidebar(Page& current, bool* keep_running, const UiState* state) {
-    // Sidebar has its own inner padding (left/right + top/bottom) so the
-    // selectables don't sit flush against the border.
-    constexpr float kInnerPadX  = 10.0f;
-    constexpr float kInnerPadY  = 12.0f;
+    // Layout knobs. All measurements are from the sidebar's left border.
+    //
+    //   ┌──────────────────────────────────────────┐
+    //   │ ◀──── kInnerPadX ────▶                   │
+    //   │                       ┌─ selectable.left │
+    //   │           ┌─ accent   │                  │
+    //   │    [pad   |▌  |gap] [   Dashboard   ]    │
+    //   │           └──┴─ kAccentInset            │
+    //   └──────────────────────────────────────────┘
+    constexpr float kInnerPadX   = 18.0f;   // gap from border to selectable
+    constexpr float kInnerPadY   = 14.0f;
     constexpr float kSelectableH = 42.0f;
+    constexpr float kAccentInset = 10.0f;   // accent bar sits 10 px LEFT of selectable
+    constexpr float kAccentW     = 4.0f;
 
     ImGui::PushStyleColor(ImGuiCol_ChildBg,       ImVec4(0.07f, 0.08f, 0.10f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_Header,        ImVec4(0.18f, 0.32f, 0.58f, 0.55f));
@@ -202,15 +211,16 @@ void DrawSidebar(Page& current, bool* keep_running, const UiState* state) {
     ImGui::PushStyleColor(ImGuiCol_HeaderActive,  ImVec4(0.22f, 0.40f, 0.78f, 0.85f));
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,       ImVec2(kInnerPadX, kInnerPadY));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,         ImVec2(0, 3));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,         ImVec2(0, 4));
     ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.0f, 0.5f));
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,        ImVec2(16, 6));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,        ImVec2(0, 6));
 
-    ImGui::BeginChild("##sidebar", ImVec2(220, 0),
+    ImGui::BeginChild("##sidebar", ImVec2(230, 0),
                       ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding,
                       ImGuiWindowFlags_NoScrollbar);
 
-    // ── compact title ────────────────────────────────────────────
+    // Title (text starts at sidebar_left + kInnerPadX — aligned with the
+    // selectables below, both via their natural Selectable.text_left).
     ImGui::TextUnformatted("AImGui");
     ImGui::TextDisabled("v%s", ImGui::GetVersion());
 
@@ -218,7 +228,10 @@ void DrawSidebar(Page& current, bool* keep_running, const UiState* state) {
     ImGui::Separator();
     ImGui::Spacing();
 
-    // ── nav items, accent bar on the left edge of the active one ─
+    // Nav items. With SelectableTextAlign=(0,0.5) the text would sit flush
+    // against the selectable's left edge → the accent bar would overlap it.
+    // Solution: draw the accent bar in the gap between the sidebar border
+    // and the selectable (still inside the child window's clip rect).
     const ImU32 accent = ImGui::GetColorU32(ImVec4(0.30f, 0.62f, 1.0f, 1.0f));
     for (const auto& p : kPages) {
         bool selected = (current == p.id);
@@ -229,14 +242,14 @@ void DrawSidebar(Page& current, bool* keep_running, const UiState* state) {
             ImVec2 a = ImGui::GetItemRectMin();
             ImVec2 b = ImGui::GetItemRectMax();
             ImGui::GetWindowDrawList()->AddRectFilled(
-                ImVec2(a.x, a.y + 6),
-                ImVec2(a.x + 4, b.y - 6),
-                accent, 2.0f);
+                ImVec2(a.x - kAccentInset,            a.y + 8),
+                ImVec2(a.x - kAccentInset + kAccentW, b.y - 8),
+                accent, kAccentW * 0.5f);
         }
     }
 
-    // ── footer pinned at the bottom: small renderer label + exit btn ─
-    constexpr float kFooterH = 76.0f;
+    // Footer pinned at the bottom: renderer label + full-width exit btn.
+    constexpr float kFooterH = 80.0f;
     float remaining = ImGui::GetWindowHeight() - ImGui::GetCursorPosY() - kFooterH;
     if (remaining > 0) ImGui::Dummy(ImVec2(0, remaining));
 
@@ -244,7 +257,10 @@ void DrawSidebar(Page& current, bool* keep_running, const UiState* state) {
     ImGui::Spacing();
     ImGui::TextDisabled("%s", state->renderer_name ? state->renderer_name : "?");
     ImGui::Spacing();
+
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 10));
     if (ImGui::Button("exit", ImVec2(-1, 0))) *keep_running = false;
+    ImGui::PopStyleVar();
 
     ImGui::EndChild();
 
