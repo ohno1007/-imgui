@@ -3,9 +3,7 @@
 #include "imgui.h"
 
 #include <android/log.h>
-#include <cstdio>
 #include <cstring>
-#include <dirent.h>
 #include <unistd.h>
 
 #define LOG_TAG "AImGui_Font"
@@ -16,81 +14,30 @@ namespace aimgui {
 
 namespace {
 
-// ── Known CJK font paths, ordered by likelihood per ROM family. ──────
-constexpr const char* kKnownCJKPaths[] = {
-    // AOSP / Pixel / generic
-    "/system/fonts/NotoSansCJK-Regular.ttc",
-    "/system/fonts/NotoSerifCJK-Regular.ttc",
-    "/system/fonts/NotoSansCJKsc-Regular.otf",
-    "/system/fonts/NotoSansCJKjp-Regular.otf",
-    "/system/fonts/NotoSansSC-Regular.otf",
-    "/system/fonts/NotoSansSC-Regular.ttf",
-    // OEMs
-    "/system/fonts/MiSans-Regular.ttf",                // Xiaomi
-    "/system/fonts/MiSans-Regular.otf",
-    "/system/fonts/MiLanProVF.ttf",
-    "/system/fonts/HYQiHei.ttf",                       // some Vivo / Oppo
-    "/system/fonts/HYQiHei-65.ttf",
-    "/system/fonts/HONOR Sans-Regular.ttf",
-    "/system/fonts/HwChinese-Medium.ttf",              // Huawei
-    "/system/fonts/HwChinese-Regular.ttf",
-    "/system/fonts/HarmonyOS_Sans_SC_Regular.ttf",
-    // Legacy AOSP
-    "/system/fonts/DroidSansFallback.ttf",
-    "/system/fonts/DroidSansFallbackFull.ttf",
-    // /product on A/B-partitioned devices
-    "/product/fonts/NotoSansCJK-Regular.ttc",
-    "/product/fonts/NotoSerifCJK-Regular.ttc",
-    "/product/fonts/MiSans-Regular.ttf",
-    "/product/fonts/HarmonyOS_Sans_SC_Regular.ttf",
-    nullptr,
-};
+bool FindAndroidSystemFont(char* out_path, size_t out_len) {
+    const char* font_dirs[] = { "/system/fonts", "/system/font", "/data/fonts" };
 
-constexpr const char* kCJKHints[] = {
-    "CJK", "cjk", "Chinese", "chinese",
-    "Hei", "hei", "Han", "han",
-    "MiSans", "misans", "HwChinese",
-    "HarmonyOS", "Harmony", "Noto", "noto",
-    "DroidFallback", "DroidSansFallback",
-    nullptr,
-};
-
-bool ContainsHint(const char* name) {
-    for (const char* const* h = kCJKHints; *h; ++h)
-        if (std::strstr(name, *h)) return true;
-    return false;
-}
-
-bool ScanDirForCJK(const char* dir_path, char* out, size_t out_len) {
-    DIR* dir = opendir(dir_path);
-    if (!dir) return false;
-    bool found = false;
-    while (dirent* e = readdir(dir)) {
-        if (e->d_name[0] == '.') continue;
-        if (!ContainsHint(e->d_name)) continue;
-        std::snprintf(out, out_len, "%s/%s", dir_path, e->d_name);
-        if (access(out, R_OK) == 0) { found = true; break; }
-    }
-    closedir(dir);
-    return found;
-}
-
-const char* FindCJKFont(char* scratch, size_t scratch_len) {
-    for (const char* const* p = kKnownCJKPaths; *p; ++p) {
-        if (access(*p, R_OK) == 0) {
-            LOGI("found CJK font (known path): %s", *p);
-            return *p;
+    char path[64] = {0};
+    char* filename = nullptr;
+    for (const char* dir : font_dirs) {
+        if (access(dir, R_OK) == 0) {
+            std::strcpy(path, dir);
+            filename = path + std::strlen(dir);
+            break;
         }
     }
-    const char* dirs[] = { "/system/fonts", "/product/fonts", nullptr };
-    for (const char** d = dirs; *d; ++d) {
-        if (ScanDirForCJK(*d, scratch, scratch_len)) {
-            LOGI("found CJK font (scan): %s", scratch);
-            return scratch;
-        }
+    if (!filename) return false;
+
+    *filename++ = '/';
+    std::strcpy(filename, "NotoSansCJK-Regular.ttc");
+    if (access(path, R_OK) != 0) {
+        std::strcpy(filename, "NotoSerifCJK-Regular.ttc");
+        if (access(path, R_OK) != 0) return false;
     }
-    LOGW("no CJK font found in /system/fonts or /product/fonts");
-    return nullptr;
+
+    if (std::strlen(path) + 1 > out_len) return false;
+    std::strcpy(out_path, path);
+    return true;
 }
 
 const ImWchar* CJKRanges() {
@@ -111,18 +58,20 @@ const ImWchar* CJKRanges() {
 ImFont* LoadDefaultAndSystemCJKFont(float size_pixels) {
     ImGuiIO& io = ImGui::GetIO();
 
-    char scratch[256];
-    if (const char* path = FindCJKFont(scratch, sizeof(scratch))) {
+    char path[64];
+    if (FindAndroidSystemFont(path, sizeof(path))) {
         ImFontConfig cfg;
         cfg.SizePixels  = size_pixels;
         cfg.PixelSnapH  = true;
         cfg.OversampleH = 1;
         cfg.OversampleV = 1;
         if (ImFont* f = io.Fonts->AddFontFromFileTTF(path, size_pixels, &cfg, CJKRanges())) {
-            LOGI("loaded CJK font @ %.1fpx", size_pixels);
+            LOGI("loaded CJK font %s @ %.1fpx", path, size_pixels);
             return f;
         }
         LOGW("AddFontFromFileTTF failed for %s", path);
+    } else {
+        LOGW("no NotoSansCJK / NotoSerifCJK font found in known dirs");
     }
 
     LOGW("falling back to built-in default font (ASCII only)");
