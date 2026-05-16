@@ -323,10 +323,8 @@ namespace Touch {
         }
 
         if (devices.empty()) {
-            puts("获取屏幕驱动失败");
             return false;
         }
-        //LOGD("device count: %zu", devices.size());
 
         int screenX = devices[0].absX.maximum;
         int screenY = devices[0].absY.maximum;

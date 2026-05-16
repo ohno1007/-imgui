@@ -75,10 +75,6 @@ int main() {
     while (running) {
         auto now = clock::now();
         float dt = std::chrono::duration<float>(now - last).count();
-        if (dt < 1.0f / 120.0f) {
-            std::this_thread::sleep_for(std::chrono::microseconds(500));
-            continue;
-        }
         last = now;
         io.DeltaTime = dt > 0.f ? dt : 1.0f / 60.0f;
 
