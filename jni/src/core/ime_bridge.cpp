@@ -5,6 +5,7 @@
 #include <android/log.h>
 
 #include <atomic>
+#include <cerrno>
 #include <cstring>
 #include <fcntl.h>
 #include <mutex>
@@ -101,10 +102,16 @@ void ReaderLoop() {
 }
 
 void WriteLine(const char* s) {
-    if (g_to_child < 0) return;
+    if (g_to_child < 0 || !g_running.load()) return;
     size_t len = std::strlen(s);
-    if (::write(g_to_child, s, len) < 0)   return;
-    if (::write(g_to_child, "\n", 1) < 0)  return;
+    if (::write(g_to_child, s, len) < 0) {
+        // Pipe died (helper crashed or was killed). Mark the bridge as
+        // dead so subsequent commands no-op immediately.
+        g_running.store(false);
+        LOGW("write to helper failed: %s", strerror(errno));
+        return;
+    }
+    ::write(g_to_child, "\n", 1);
 }
 
 } // namespace

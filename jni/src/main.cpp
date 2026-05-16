@@ -9,7 +9,11 @@
 #include "ui/ui.h"
 
 #include <chrono>
+#include <climits>
+#include <csignal>
+#include <string>
 #include <thread>
+#include <unistd.h>
 
 namespace {
 
@@ -64,6 +68,11 @@ int main() {
     using namespace android;
     using clock = std::chrono::steady_clock;
 
+    // The IME bridge writes to a pipe whose other end may die at any time
+    // (Java helper failing to start, killed externally, etc). Without this
+    // the very first write() after the child dies kills us with SIGPIPE.
+    ::signal(SIGPIPE, SIG_IGN);
+
     auto info = ANativeWindowCreator::GetDisplayInfo();
     const int W = info.width  > info.height ? info.width  : info.height;
     const int H = info.width  > info.height ? info.height : info.width;
@@ -95,10 +104,20 @@ int main() {
 
     aimgui::kbd_input::Init();
 
-    // Optional Java helper for system IME input. If the dex isn't beside
-    // the binary (or app_process refuses to launch) we silently carry on
-    // without IME — everything else still works.
-    aimgui::ime::Init("/data/local/tmp/AImGui.dex");
+    // Optional Java helper for system IME input. Look for AImGui.dex
+    // sitting next to our ELF (e.g. /data/AImGui  ↔  /data/AImGui.dex).
+    // If app_process refuses to launch or the dex isn't there we silently
+    // carry on — everything else still works.
+    {
+        char exe[PATH_MAX];
+        ssize_t n = ::readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+        std::string dex_path = "/data/local/tmp/AImGui.dex";
+        if (n > 0) {
+            exe[n] = '\0';
+            dex_path = std::string(exe) + ".dex";
+        }
+        aimgui::ime::Init(dex_path.c_str());
+    }
 
     bool prev_want_text = false;
 
