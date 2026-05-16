@@ -43,6 +43,7 @@ public final class Helper {
     private static volatile InputMethodManager sImm;
     private static volatile WindowManager sWm;
     private static volatile Handler sHandler;
+    private static volatile Object  sActivityThread;
 
     public static void main(String[] args) {
         out("READY");
@@ -86,6 +87,12 @@ public final class Helper {
         out("DEBUG setup-2 ctx=" + (ctx != null));
         if (ctx == null) { out("ERROR no-context"); return; }
 
+        // WMS keeps a process map keyed by PID; raw app_process invocations
+        // aren't in it, so addView throws "Unknown pid". Try to register us
+        // by calling ActivityThread.attach(false). Likely fails (AMS has no
+        // pending record for our PID either) but works on some forks.
+        tryAttachToAms();
+
         sWm  = (WindowManager) ctx.getSystemService(Context.WINDOW_SERVICE);
         sImm = (InputMethodManager) ctx.getSystemService(Context.INPUT_METHOD_SERVICE);
         out("DEBUG setup-3 wm=" + (sWm != null) + " imm=" + (sImm != null));
@@ -125,6 +132,9 @@ public final class Helper {
             WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY,
             WindowManager.LayoutParams.TYPE_SYSTEM_ALERT,
             WindowManager.LayoutParams.TYPE_PHONE,
+            WindowManager.LayoutParams.TYPE_PRIORITY_PHONE,
+            WindowManager.LayoutParams.TYPE_SYSTEM_ERROR,
+            WindowManager.LayoutParams.TYPE_TOAST,
         };
         boolean added = false;
         for (int t : types) {
@@ -215,7 +225,40 @@ public final class Helper {
                     first);
             }
         }
+        sActivityThread = thread;
         return (Context) at.getMethod("getSystemContext").invoke(thread);
+    }
+
+    // Attempt to make WMS recognise our PID by calling
+    // ActivityThread.attach(false[, startSeq]) via reflection. AMS will
+    // most likely reject the call because we weren't spawned by zygote,
+    // but on some forks (and some maintenance ROMs) the side effect of
+    // touching mAppThread / mInitialApplication is enough.
+    private static void tryAttachToAms() {
+        if (sActivityThread == null) { out("DEBUG ams-attach-no-thread"); return; }
+        Class<?> at = sActivityThread.getClass();
+        for (Class<?>[] sig : new Class<?>[][] {
+                { boolean.class, long.class },
+                { boolean.class },
+        }) {
+            try {
+                java.lang.reflect.Method m = at.getDeclaredMethod("attach", sig);
+                m.setAccessible(true);
+                Object[] args = sig.length == 2 ? new Object[]{Boolean.FALSE, 0L}
+                                                : new Object[]{Boolean.FALSE};
+                m.invoke(sActivityThread, args);
+                out("DEBUG ams-attach-ok sig=" + sig.length);
+                return;
+            } catch (NoSuchMethodException nsme) {
+                // try the other signature
+            } catch (Throwable t) {
+                out("DEBUG ams-attach-failed sig=" + sig.length + " " +
+                    t.getClass().getSimpleName() + " " +
+                    (t.getCause() != null ? t.getCause().getMessage() : t.getMessage()));
+                return;
+            }
+        }
+        out("DEBUG ams-attach-no-method");
     }
 
     private static void readCommandsLoop() {
