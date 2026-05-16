@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 #include <dirent.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #define LOG_TAG "AImGui_Font"
@@ -23,16 +24,21 @@ constexpr const char* kFontDirs[] = {
     "/mnt/system/system/fonts",
 };
 
-// Known CJK-capable font filenames, checked in order across kFontDirs.
+// Ordered by likelihood per OEM. AOSP fonts come last because on heavily
+// re-skinned Chinese OEM ROMs (ColorOS, MIUI, HarmonyOS, ...) the original
+// NotoSansCJK file is occasionally a stripped stub that stb_truetype can no
+// longer parse — we'd rather use a working OEM font in that case.
 constexpr const char* kKnownNames[] = {
-    // AOSP / Pixel / generic
-    "NotoSansCJK-Regular.ttc",
-    "NotoSerifCJK-Regular.ttc",
-    "NotoSansCJKsc-Regular.otf",
-    "NotoSansCJKjp-Regular.otf",
-    "NotoSansSC-Regular.otf",
-    "NotoSansSC-Regular.ttf",
-    "NotoSerifSC-Regular.otf",
+    // OPPO / OnePlus (ColorOS / OxygenOS)
+    "OPlusSans3-Regular.ttf",
+    "OPlusSans-Regular.ttf",
+    "OPlusSans.ttf",
+    "OPPOSans-Regular.ttf",
+    "OPPOSans-R.ttf",
+    "OnePlusSans-Regular.ttf",
+    "OPSansCN-Regular.ttf",
+    "OPSans-Regular.ttf",
+    "OPSansVF.ttf",
     // Xiaomi / Redmi (MIUI / HyperOS)
     "MiSans-Regular.ttf",
     "MiSans-Normal.ttf",
@@ -42,43 +48,48 @@ constexpr const char* kKnownNames[] = {
     "MiSans-VF.ttf",
     "MiLanProVF.ttf",
     "MiLanPro_VF.ttf",
-    // Huawei / Honor
+    // Huawei / Honor (HarmonyOS / MagicOS)
     "HarmonyOS_Sans_SC_Regular.ttf",
     "HarmonyOS_Sans_SC_Medium.ttf",
     "HarmonyOS_Sans_Regular.ttf",
     "HwChinese-Medium.ttf",
     "HwChinese-Regular.ttf",
-    "HONOR Sans-Regular.ttf",
     "HONOR Sans CN-Regular.ttf",
-    // Oppo / Vivo / OnePlus
-    "OPSans-Regular.ttf",
-    "OPSans-Medium.ttf",
-    "OPSansVF.ttf",
+    "HONOR Sans-Regular.ttf",
+    // Vivo (OriginOS / FuntouchOS)
+    "VivoSansCN-Regular.ttf",
+    "VivoFontTW-Regular.ttf",
     "HYQiHei.ttf",
     "HYQiHei-65.ttf",
-    "DOUYIN-SansFont.ttf",
     // Samsung
     "SamsungOneUI-Regular.ttf",
     "SECCJK-Regular.ttc",
-    // Legacy AOSP
+    // AOSP / Pixel (last because of stub-file risk on OEM ROMs)
+    "NotoSansCJK-Regular.ttc",
+    "NotoSerifCJK-Regular.ttc",
+    "NotoSansCJKsc-Regular.otf",
+    "NotoSansCJKjp-Regular.otf",
+    "NotoSansSC-Regular.otf",
+    "NotoSansSC-Regular.ttf",
+    "NotoSerifSC-Regular.otf",
+    // Legacy
     "DroidSansFallback.ttf",
     "DroidSansFallbackFull.ttf",
-    "DroidSans.ttf",
 };
 
 // Substrings hinting that a font file likely contains CJK glyphs. Kept
 // specific to avoid matching Latin-only siblings like NotoSans-Regular.ttf,
-// DroidSans.ttf, HarmonyOS_Sans (the non-SC variant), etc.
+// DroidSans.ttf or HarmonyOS_Sans (the non-SC variant).
 constexpr const char* kCJKHints[] = {
-    "CJK",   "cjk",
+    "CJK", "cjk",
     "NotoSansSC", "NotoSerifSC", "NotoSansTC", "NotoSerifTC",
     "NotoSansHK", "NotoSerifHK",
-    "MiSans", "misans",
-    "MiLan",
+    "MiSans", "misans", "MiLan",
     "HwChinese",
     "HarmonyOS_Sans_SC", "HarmonyOS_Sans_TC",
-    "OPSansCN",
-    "Hans",                  // *Hans*, e.g. SourceHanSans
+    "OPlusSans", "OPPOSans", "OnePlusSans", "OPSansCN",
+    "VivoSansCN", "VivoFontTW",
+    "Hans",  // SourceHanSans, NotoSansHans
     "HYQiHei", "FangZhengHei",
     "DroidSansFallback",
     "Chinese", "chinese",
@@ -91,21 +102,53 @@ bool NameLooksCJK(const char* name) {
     return false;
 }
 
-bool ProbeKnownNames(char* out, size_t out_len) {
+// Skip obviously-bogus stubs (< 200KB can't fit any reasonable CJK font).
+bool LooksLikeRealFont(const char* path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return false;
+    return st.st_size >= 200 * 1024;
+}
+
+bool TryAddFontFromFile(const char* path, float SizePixels) {
+    if (!LooksLikeRealFont(path)) {
+        LOGW("skip %s (too small to be a CJK font)", path);
+        return false;
+    }
+    ImFontConfig cfg;
+    cfg.SizePixels  = SizePixels;
+    cfg.PixelSnapH  = true;
+    cfg.OversampleH = 1;
+    cfg.OversampleV = 1;
+    cfg.Flags      |= ImFontFlags_NoLoadError; // don't assert on parse failure
+
+    ImFont* f = ImGui::GetIO().Fonts->AddFontFromFileTTF(path, SizePixels, &cfg);
+    if (!f) {
+        LOGW("AddFontFromFileTTF rejected %s", path);
+        return false;
+    }
+    LOGI("loaded CJK font: %s @ %.1fpx (dynamic atlas)", path, SizePixels);
+    return true;
+}
+
+// Try every known filename across every dir. First one that ImGui actually
+// accepts wins.
+bool TryKnownNames(float SizePixels) {
+    char path[256];
     for (const char* dir : kFontDirs) {
         if (access(dir, R_OK) != 0) continue;
         for (const char* name : kKnownNames) {
-            std::snprintf(out, out_len, "%s/%s", dir, name);
-            if (access(out, R_OK) == 0) {
-                LOGI("known-name match: %s", out);
-                return true;
-            }
+            std::snprintf(path, sizeof(path), "%s/%s", dir, name);
+            if (access(path, R_OK) != 0) continue;
+            if (TryAddFontFromFile(path, SizePixels)) return true;
         }
     }
     return false;
 }
 
-bool ProbeByDirScan(char* out, size_t out_len) {
+// Last-resort: scan every font dir for any .ttc/.ttf/.otf whose name looks
+// CJK, and try to load them in turn.
+bool TryDirScan(float SizePixels) {
+    char path[256];
     for (const char* dir : kFontDirs) {
         DIR* d = opendir(dir);
         if (!d) continue;
@@ -118,10 +161,10 @@ bool ProbeByDirScan(char* out, size_t out_len) {
                 std::strcmp(dot, ".ttf") != 0 &&
                 std::strcmp(dot, ".otf") != 0) continue;
             if (!NameLooksCJK(n)) continue;
-            std::snprintf(out, out_len, "%s/%s", dir, n);
-            if (access(out, R_OK) == 0) {
+            std::snprintf(path, sizeof(path), "%s/%s", dir, n);
+            if (access(path, R_OK) != 0) continue;
+            if (TryAddFontFromFile(path, SizePixels)) {
                 closedir(d);
-                LOGI("dir-scan match: %s", out);
                 return true;
             }
         }
@@ -130,41 +173,22 @@ bool ProbeByDirScan(char* out, size_t out_len) {
     return false;
 }
 
-bool ResolveCJKFontPath(char* out, size_t out_len) {
-    return ProbeKnownNames(out, out_len) || ProbeByDirScan(out, out_len);
-}
-
 } // namespace
 
 namespace ImGui {
 
-// Locate a system CJK font and let ImGui's dynamic font atlas (1.92+ with
-// ImGuiBackendFlags_RendererHasTextures, which both imgui_impl_opengl3 and
-// imgui_impl_vulkan set) rasterize glyphs on demand. No glyph_ranges
-// argument — under the dynamic atlas it's a no-op and historically caused
-// '?'-renderings or atlas overflow when used with the full CJK range.
+// Walks the common Android font directories and asks ImGui to load each
+// known-CJK font in turn until one is accepted by the stb_truetype loader.
+// ImGui 1.92's dynamic font atlas (ImGuiBackendFlags_RendererHasTextures,
+// which both imgui_impl_opengl3 and imgui_impl_vulkan set) rasterizes glyphs
+// on demand, so no glyph_ranges argument is necessary — any Unicode codepoint
+// present in the font's cmap will render.
 bool My_Android_LoadSystemFont(float SizePixels) {
-    char path[256];
-    if (!ResolveCJKFontPath(path, sizeof(path))) {
-        LOGW("no CJK font found in /system/fonts /system/font /data/fonts "
-             "/product/fonts /system_ext/fonts /mnt/system/system/fonts");
-        return false;
-    }
-
-    ImGuiIO& io = ImGui::GetIO();
-    ImFontConfig cfg;
-    cfg.SizePixels  = SizePixels;
-    cfg.PixelSnapH  = true;
-    cfg.OversampleH = 1;
-    cfg.OversampleV = 1;
-
-    ImFont* f = io.Fonts->AddFontFromFileTTF(path, SizePixels, &cfg);
-    if (!f) {
-        LOGW("AddFontFromFileTTF failed for %s", path);
-        return false;
-    }
-    LOGI("loaded CJK font %s @ %.1fpx (dynamic atlas)", path, SizePixels);
-    return true;
+    if (TryKnownNames(SizePixels)) return true;
+    if (TryDirScan(SizePixels))    return true;
+    LOGW("no loadable CJK font found in any of /system/fonts /system/font "
+         "/data/fonts /product/fonts /system_ext/fonts /mnt/system/system/fonts");
+    return false;
 }
 
 } // namespace ImGui
