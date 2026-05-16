@@ -16,6 +16,7 @@ LOCAL_SRC_FILES := \
     renderer_vk.cpp \
     vulkan_wrapper.cpp \
     font.cpp \
-    keyboard_input.cpp
+    keyboard_input.cpp \
+    termux_input.cpp
 
 include $(BUILD_STATIC_LIBRARY)

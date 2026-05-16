@@ -2,6 +2,7 @@
 #include "core/font.h"
 #include "core/keyboard_input.h"
 #include "core/renderer.h"
+#include "core/termux_input.h"
 #include "imgui.h"
 #include "platform/ANativeWindowCreator.h"
 #include "platform/TouchHelperA.h"
@@ -100,6 +101,7 @@ int main() {
     Touch::setOrientation((int)info.orientation);
 
     aimgui::kbd_input::Init();
+    aimgui::termux_input::Init();
 
     auto last = clock::now();
     bool running = true;
@@ -125,6 +127,7 @@ int main() {
         }
 
         aimgui::kbd_input::Flush();
+        aimgui::termux_input::Tick();
 
         ctx.renderer->NewFrame();
         ImGui::NewFrame();
@@ -146,6 +149,7 @@ int main() {
         }
     }
 
+    aimgui::termux_input::Shutdown();
     aimgui::kbd_input::Shutdown();
     DestroyWindow(&ctx);
     ImGui::DestroyContext();

@@ -1,5 +1,6 @@
 #include "ui/ui.h"
 
+#include "core/termux_input.h"
 #include "imgui.h"
 
 #include <cstdio>
@@ -93,11 +94,31 @@ void DrawWidgets() {
     ImGui::SameLine();
     ImGui::Text("count = %d", counter);
 
-    ImGui::InputText("text", text, IM_ARRAYSIZE(text));
-    ImGui::TextDisabled(
-        "InputText needs an external text source (system IME, hardware\n"
-        "keyboard, or a uinput-bridge IME); native ELFs have no\n"
-        "InputConnection to receive IME characters directly.");
+    ImGui::InputText("##text", text, IM_ARRAYSIZE(text));
+    ImGui::SameLine();
+    {
+        const bool busy = termux_input::IsBusy();
+        const bool ok   = termux_input::IsAvailable();
+        if (!ok)   ImGui::BeginDisabled();
+        if (busy)  ImGui::BeginDisabled();
+        if (ImGui::Button(busy ? "..." : "edit")) {
+            termux_input::Launch(text, IM_ARRAYSIZE(text),
+                                 "AImGui — enter text", text);
+        }
+        if (busy)  ImGui::EndDisabled();
+        if (!ok)   ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::TextUnformatted("text");
+    }
+    if (!termux_input::IsAvailable()) {
+        ImGui::TextDisabled(
+            "Install Termux + Termux:API to enable the 'edit' button; it\n"
+            "popens termux-dialog to bring up the system IME.");
+    } else {
+        ImGui::TextDisabled(
+            "Tap 'edit' to open Termux:API's text dialog (any IME — soft\n"
+            "keyboard, voice, handwriting — works there).");
+    }
 
     ImGui::SliderFloat("slider", &slider, 0.0f, 1.0f, "%.3f");
     ImGui::Checkbox("toggle",  &toggle);
