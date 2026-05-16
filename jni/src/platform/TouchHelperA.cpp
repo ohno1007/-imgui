@@ -331,7 +331,9 @@ namespace Touch {
         int screenX = devices[0].absX.maximum;
         int screenY = devices[0].absY.maximum;
 
-        if (!readOnly) {
+        // AImGui patch: never create a uinput virtual device. We only read
+        // /dev/input/event* and feed the events to ImGui — no re-injection.
+        if (false /* was: !readOnly */) {
             struct uinput_user_dev ui_dev;
             nowfd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
             if (nowfd <= 0) {

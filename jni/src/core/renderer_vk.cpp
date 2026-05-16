@@ -40,10 +40,7 @@ public:
         }
 
         void* libvulkan = dlopen("libvulkan.so", RTLD_NOW);
-        // Pin the API version we actually create our instance with so the
-        // backend doesn't try to resolve Vulkan 1.2/1.3 symbols that aren't
-        // present on older Android devices.
-        ImGui_ImplVulkan_LoadFunctions(VK_API_VERSION_1_1,
+        ImGui_ImplVulkan_LoadFunctions(0,
             [](const char* name, void* user) -> PFN_vkVoidFunction {
                 return reinterpret_cast<PFN_vkVoidFunction>(dlsym(user, name));
             }, libvulkan);
@@ -201,7 +198,6 @@ private:
 
     void SetupImGuiBackend() {
         ImGui_ImplVulkan_InitInfo ii{};
-        ii.ApiVersion = VK_API_VERSION_1_1;
         ii.Instance = m_Instance;
         ii.PhysicalDevice = m_PhysicalDevice;
         ii.Device = m_Device;
