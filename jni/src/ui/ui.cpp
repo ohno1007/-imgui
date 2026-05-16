@@ -59,38 +59,53 @@ void ApplyStyleOnce() {
     s.Colors[ImGuiCol_TitleBgCollapsed] = s.Colors[ImGuiCol_TitleBgActive];
 }
 
-// SliderFloat that paints the numeric value centered on the grab itself
-// instead of next to the label. Behaves like the stock SliderFloat for
-// layout/interaction otherwise.
+// SliderFloat with a pill-shaped grab whose width hugs the formatted value
+// text. The default rectangular grab is suppressed; we draw our own pill on
+// top and center the number inside it.
 bool SliderFloatGrabValue(const char* label, float* v, float v_min, float v_max,
                           const char* fmt = "%.3f") {
+    ImGui::PushStyleColor(ImGuiCol_SliderGrab,       IM_COL32(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, IM_COL32(0, 0, 0, 0));
     bool changed = ImGui::SliderFloat(label, v, v_min, v_max, "");
+    ImGui::PopStyleColor(2);
 
     const ImVec2 totalMin = ImGui::GetItemRectMin();
     const ImVec2 totalMax = ImGui::GetItemRectMax();
 
-    // Item rect includes the trailing label; strip it to get the slider bar.
+    // Item rect includes the trailing label; strip it to get the bar rect.
     const char* hash = std::strstr(label, "##");
     const char* visible_end = hash ? hash : label + std::strlen(label);
     const ImVec2 label_size = ImGui::CalcTextSize(label, visible_end);
     const float  inner      = ImGui::GetStyle().ItemInnerSpacing.x;
-    const float  slider_w   = (totalMax.x - totalMin.x) -
+    const float  bar_w      = (totalMax.x - totalMin.x) -
                               (label_size.x > 0.0f ? label_size.x + inner : 0.0f);
-    const float  bar_right  = totalMin.x + slider_w;
-
-    const float grab_half = ImGui::GetStyle().GrabMinSize * 0.5f;
-    const float xL = totalMin.x + grab_half;
-    const float xR = bar_right  - grab_half;
-    float t = (v_max != v_min) ? (*v - v_min) / (v_max - v_min) : 0.0f;
-    if (t < 0.0f) t = 0.0f; else if (t > 1.0f) t = 1.0f;
-    const float grabX = xL + t * (xR - xL);
+    const ImVec2 barMin = totalMin;
+    const ImVec2 barMax(totalMin.x + bar_w, totalMax.y);
 
     char buf[32];
     std::snprintf(buf, sizeof(buf), fmt, *v);
     const ImVec2 ts = ImGui::CalcTextSize(buf);
-    const ImVec2 textPos(grabX - ts.x * 0.5f,
-                         (totalMin.y + totalMax.y - ts.y) * 0.5f);
-    ImGui::GetWindowDrawList()->AddText(textPos, IM_COL32_WHITE, buf);
+
+    // Pill width hugs the value text; height tracks the font so the digits
+    // sit comfortably inside it.
+    const float pad_x  = 18.0f;
+    const float min_w  = ImGui::GetStyle().GrabMinSize;
+    const float grab_w = (ts.x + pad_x > min_w) ? ts.x + pad_x : min_w;
+    const float grab_h = ts.y + 10.0f;
+
+    float t = (v_max != v_min) ? (*v - v_min) / (v_max - v_min) : 0.0f;
+    if (t < 0.0f) t = 0.0f; else if (t > 1.0f) t = 1.0f;
+    const float xL = barMin.x + grab_w * 0.5f;
+    const float xR = barMax.x - grab_w * 0.5f;
+    const float cx = xL + t * (xR - xL);
+    const float cy = (barMin.y + barMax.y) * 0.5f;
+    const ImVec2 gMin(cx - grab_w * 0.5f, cy - grab_h * 0.5f);
+    const ImVec2 gMax(cx + grab_w * 0.5f, cy + grab_h * 0.5f);
+
+    const ImU32 col = ImGui::GetColorU32(ImGuiCol_SliderGrab);
+    ImDrawList* dl  = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(gMin, gMax, col, grab_h * 0.5f);
+    dl->AddText(ImVec2(cx - ts.x * 0.5f, cy - ts.y * 0.5f), IM_COL32_WHITE, buf);
 
     return changed;
 }
@@ -138,56 +153,84 @@ void DrawWidgets() {
 
     ImGui::Spacing();
 
-    // Collapsible list with a shared-element transition: a single rounded
-    // highlight rect lerps from the old selected row to the new one each
-    // frame, drawn beneath the row text via DrawList channels.
-    if (ImGui::CollapsingHeader(u8"列表", ImGuiTreeNodeFlags_DefaultOpen)) {
+    // Collapsible list with animated expand/collapse + shared-element row
+    // transition. The header drives an exponential-eased "open factor" t in
+    // [0..1]; the items are then wrapped in a BeginChild whose height is
+    // `t * full_height` so they slide in/out under the header. A single
+    // rounded highlight rect lerps from the old selected row to the new one
+    // and is drawn beneath the row text via DrawList channels.
+    {
+        static bool   list_open       = true;
+        static float  list_t          = 1.0f;
+        static float  list_full_h     = 160.0f;
         static int    selected         = 0;
         static ImVec2 anim_min         = ImVec2(0, 0);
         static ImVec2 anim_max         = ImVec2(0, 0);
         static bool   anim_initialized = false;
 
-        const char* items[] = { u8"第一项", u8"第二项", u8"第三项", u8"第四项" };
-        const int N = IM_ARRAYSIZE(items);
+        ImGui::SetNextItemOpen(list_open, ImGuiCond_FirstUseEver);
+        list_open = ImGui::CollapsingHeader(u8"列表");
 
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        dl->ChannelsSplit(2);
-        dl->ChannelsSetCurrent(1); // text/interaction on top channel
+        const float dt    = ImGui::GetIO().DeltaTime;
+        const float alpha = 1.0f - std::exp(-14.0f * dt);
+        list_t += ((list_open ? 1.0f : 0.0f) - list_t) * alpha;
 
-        // Hide ImGui's built-in selectable highlight; we paint our own.
-        ImGui::PushStyleColor(ImGuiCol_Header,        IM_COL32(0, 0, 0, 0));
-        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_COL32(0, 0, 0, 0));
-        ImGui::PushStyleColor(ImGuiCol_HeaderActive,  IM_COL32(0, 0, 0, 0));
+        if (list_t > 0.005f) {
+            const float child_h = list_full_h * list_t;
+            ImGui::BeginChild("##list_content", ImVec2(0, child_h),
+                              ImGuiChildFlags_None,
+                              ImGuiWindowFlags_NoScrollbar);
 
-        ImVec2 sel_min(0, 0), sel_max(0, 0);
-        for (int i = 0; i < N; ++i) {
-            if (ImGui::Selectable(items[i], selected == i)) selected = i;
-            if (selected == i) {
-                sel_min = ImGui::GetItemRectMin();
-                sel_max = ImGui::GetItemRectMax();
+            const char* items[] = { u8"第一项", u8"第二项", u8"第三项", u8"第四项" };
+            const int N = IM_ARRAYSIZE(items);
+
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            dl->ChannelsSplit(2);
+            dl->ChannelsSetCurrent(1);
+
+            ImGui::PushStyleColor(ImGuiCol_Header,        IM_COL32(0, 0, 0, 0));
+            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_COL32(0, 0, 0, 0));
+            ImGui::PushStyleColor(ImGuiCol_HeaderActive,  IM_COL32(0, 0, 0, 0));
+
+            const float y_start = ImGui::GetCursorPosY();
+            ImVec2 sel_min(0, 0), sel_max(0, 0);
+            for (int i = 0; i < N; ++i) {
+                if (ImGui::Selectable(items[i], selected == i)) selected = i;
+                if (selected == i) {
+                    sel_min = ImGui::GetItemRectMin();
+                    sel_max = ImGui::GetItemRectMax();
+                }
             }
-        }
-        ImGui::PopStyleColor(3);
+            const float y_end = ImGui::GetCursorPosY();
 
-        // Lerp animated highlight toward the currently-selected row.
-        dl->ChannelsSetCurrent(0);
-        if (sel_max.y > sel_min.y) {
-            if (!anim_initialized) {
-                anim_min = sel_min;
-                anim_max = sel_max;
-                anim_initialized = true;
-            } else {
-                const float dt    = ImGui::GetIO().DeltaTime;
-                const float alpha = 1.0f - std::exp(-15.0f * dt);
-                anim_min.x += (sel_min.x - anim_min.x) * alpha;
-                anim_min.y += (sel_min.y - anim_min.y) * alpha;
-                anim_max.x += (sel_max.x - anim_max.x) * alpha;
-                anim_max.y += (sel_max.y - anim_max.y) * alpha;
+            ImGui::PopStyleColor(3);
+
+            dl->ChannelsSetCurrent(0);
+            if (sel_max.y > sel_min.y) {
+                if (!anim_initialized) {
+                    anim_min = sel_min;
+                    anim_max = sel_max;
+                    anim_initialized = true;
+                } else {
+                    const float a2 = 1.0f - std::exp(-15.0f * dt);
+                    anim_min.x += (sel_min.x - anim_min.x) * a2;
+                    anim_min.y += (sel_min.y - anim_min.y) * a2;
+                    anim_max.x += (sel_max.x - anim_max.x) * a2;
+                    anim_max.y += (sel_max.y - anim_max.y) * a2;
+                }
+                const ImU32 col = ImGui::GetColorU32(ImVec4(0.22f, 0.40f, 0.78f, 0.55f));
+                dl->AddRectFilled(anim_min, anim_max, col, 6.0f);
             }
-            const ImU32 col = ImGui::GetColorU32(ImVec4(0.22f, 0.40f, 0.78f, 0.55f));
-            dl->AddRectFilled(anim_min, anim_max, col, 6.0f);
+            dl->ChannelsMerge();
+
+            // Re-measure the natural list height once the expand animation
+            // has fully settled so list_full_h tracks any future item count
+            // changes.
+            if (list_t > 0.99f && y_end > y_start) {
+                list_full_h = y_end - y_start;
+            }
+            ImGui::EndChild();
         }
-        dl->ChannelsMerge();
     }
 
     ImGui::Spacing();
