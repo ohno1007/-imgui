@@ -185,14 +185,12 @@ private:
         m_WD->SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(
             m_PhysicalDevice, surface, fmts, IM_ARRAYSIZE(fmts), VK_COLORSPACE_SRGB_NONLINEAR_KHR);
 
-        // Prefer MAILBOX (no tearing, no 60 Hz cap) → IMMEDIATE (no vsync) →
-        // FIFO (vsync fallback that always exists). This unlocks the loop
-        // beyond the display refresh rate when the device supports it.
-        VkPresentModeKHR modes[] = {
-            VK_PRESENT_MODE_MAILBOX_KHR,
-            VK_PRESENT_MODE_IMMEDIATE_KHR,
-            VK_PRESENT_MODE_FIFO_KHR,
-        };
+        // FIFO is hard vsync — the panel's vblank becomes our frame clock,
+        // giving a flat refresh-rate-bound FPS without any CPU spin (the
+        // wait happens inside vkAcquireNextImageKHR as the OS schedules us
+        // off the CPU between frames). For target rates below the panel
+        // refresh, main.cpp's drift-corrected sleep_until adds the gap.
+        VkPresentModeKHR modes[] = { VK_PRESENT_MODE_FIFO_KHR };
         m_WD->PresentMode = ImGui_ImplVulkanH_SelectPresentMode(
             m_PhysicalDevice, surface, modes, IM_ARRAYSIZE(modes));
 

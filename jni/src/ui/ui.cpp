@@ -6,9 +6,9 @@ namespace aimgui {
 
 namespace {
 
-constexpr int   kFpsPresets[] = { 0,   30,  60,  90, 120, 144, 240 };
+constexpr int   kFpsPresets[] = { 0,   30,  60,  90, 120, 144 };
 constexpr const char* kFpsLabels =
-    "unlimited\0" "30\0" "60\0" "90\0" "120\0" "144\0" "240\0";
+    "vsync\0" "30\0" "60\0" "90\0" "120\0" "144\0";
 
 int FpsToIndex(int target_fps) {
     for (int i = 0; i < IM_ARRAYSIZE(kFpsPresets); ++i)

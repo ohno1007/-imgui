@@ -33,21 +33,34 @@ void DestroyWindow(WindowCtx* ctx) {
     if (ctx->window)   { android::ANativeWindowCreator::Destroy(ctx->window); ctx->window = nullptr; }
 }
 
-// Sleep until `deadline`, or return immediately if it's already past. Uses
-// a coarse sleep for the bulk and a short spin for the last ~500µs so the
-// FPS cap is precise without burning CPU.
-void SleepUntil(std::chrono::steady_clock::time_point deadline) {
-    using namespace std::chrono;
-    auto now = steady_clock::now();
-    if (deadline <= now) return;
-    auto remaining = deadline - now;
-    if (remaining > microseconds(500)) {
-        std::this_thread::sleep_for(remaining - microseconds(500));
+// Drift-corrected frame pacer. Holds an absolute next_deadline that
+// advances by exactly one period each frame, so wake-up jitter doesn't
+// accumulate into a lower-than-target average rate. Resyncs if we fall a
+// full period behind (e.g. the user just lowered the target FPS).
+class FramePacer {
+public:
+    void SetTargetFps(int fps) {
+        if (fps == m_TargetFps) return;
+        m_TargetFps = fps;
+        m_Period    = fps > 0 ? std::chrono::nanoseconds(1'000'000'000LL / fps)
+                              : std::chrono::nanoseconds::zero();
+        m_NextDeadline = std::chrono::steady_clock::now();
     }
-    while (steady_clock::now() < deadline) {
-        std::this_thread::yield();
+
+    // Block until it's time for the next frame. No-op when uncapped.
+    void Wait() {
+        if (m_TargetFps <= 0) return;
+        auto now = std::chrono::steady_clock::now();
+        m_NextDeadline += m_Period;
+        if (m_NextDeadline < now) m_NextDeadline = now + m_Period; // resync
+        std::this_thread::sleep_until(m_NextDeadline);
     }
-}
+
+private:
+    int m_TargetFps = 0;
+    std::chrono::nanoseconds m_Period{};
+    std::chrono::steady_clock::time_point m_NextDeadline{};
+};
 
 } // namespace
 
@@ -87,11 +100,15 @@ int main() {
     bool running = true;
     uint32_t cached_orientation = info.orientation;
 
+    FramePacer pacer;
+
     while (running) {
         auto frame_start = clock::now();
         io.DeltaTime = std::chrono::duration<float>(frame_start - last).count();
         if (io.DeltaTime <= 0.f) io.DeltaTime = 1.0f / 60.0f;
         last = frame_start;
+
+        pacer.SetTargetFps(st.target_fps);
 
         info = ANativeWindowCreator::GetDisplayInfo();
         if (info.orientation != cached_orientation) {
@@ -107,11 +124,7 @@ int main() {
         aimgui::DrawUi(&st, &running);
         ctx.renderer->EndFrame();
 
-        // ── frame-rate cap ──────────────────────────────────────────
-        if (st.target_fps > 0) {
-            auto period = std::chrono::nanoseconds(1'000'000'000LL / st.target_fps);
-            SleepUntil(frame_start + period);
-        }
+        pacer.Wait();
 
         // ── anti-recording toggle ───────────────────────────────────
         if (st.request_permeate_toggle) {

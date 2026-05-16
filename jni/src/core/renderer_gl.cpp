@@ -47,9 +47,10 @@ public:
         if (m_Context == EGL_NO_CONTEXT || m_Surface == EGL_NO_SURFACE) return false;
         if (!eglMakeCurrent(m_Display, m_Surface, m_Surface, m_Context)) return false;
 
-        // Disable vsync so the main loop can render above the display refresh
-        // rate (60 Hz on most panels). Falls back silently if unsupported.
-        eglSwapInterval(m_Display, 0);
+        // Lock to vsync: the panel becomes the frame clock. eglSwapBuffers
+        // blocks until the next vblank, giving a flat FPS curve at the
+        // panel refresh rate with zero CPU spin.
+        eglSwapInterval(m_Display, 1);
 
         glViewport(0, 0, width, height);
         glClearColor(0.f, 0.f, 0.f, 0.f);
