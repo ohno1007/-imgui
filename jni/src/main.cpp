@@ -64,7 +64,8 @@ int main() {
     }
     st.renderer_name = ctx.renderer->Name();
 
-    Touch::Init({(float)W, (float)H}, false);
+    // readOnly = true: only read /dev/input/event* — do not create a uinput virtual device.
+    Touch::Init({(float)W, (float)H}, true);
     Touch::setOrientation((int)info.orientation);
 
     using clock = std::chrono::steady_clock;
