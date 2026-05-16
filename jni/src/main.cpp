@@ -6,8 +6,13 @@
 #include "platform/ANativeWindowCreator.h"
 #include "platform/TouchHelperA.h"
 
+#include <android/log.h>
 #include <chrono>
 #include <thread>
+
+#define LOG_TAG "AImGui"
+#define LOGI(fmt, ...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, fmt, ##__VA_ARGS__)
+#define LOGE(fmt, ...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, fmt, ##__VA_ARGS__)
 
 namespace {
 
@@ -17,14 +22,21 @@ struct WindowCtx {
 };
 
 bool BuildWindow(WindowCtx* ctx, int W, int H, bool permeate_record) {
+    LOGI("BuildWindow: creating SurfaceFlinger surface (permeate=%d)", permeate_record);
     ctx->window = android::ANativeWindowCreator::Create("AImGui", W, W, permeate_record);
-    if (!ctx->window) return false;
+    if (!ctx->window) {
+        LOGE("ANativeWindowCreator::Create failed");
+        return false;
+    }
+    LOGI("BuildWindow: creating renderer");
     ctx->renderer = aimgui::MakeRenderer(ctx->window, W, W, aimgui::Backend::Auto);
     if (!ctx->renderer) {
+        LOGE("MakeRenderer failed");
         android::ANativeWindowCreator::Destroy(ctx->window);
         ctx->window = nullptr;
         return false;
     }
+    LOGI("BuildWindow: renderer = %s", ctx->renderer->Name());
     return true;
 }
 
@@ -38,10 +50,13 @@ void DestroyWindow(WindowCtx* ctx) {
 int main() {
     using namespace android;
 
+    LOGI("== AImGui starting ==");
     auto info = ANativeWindowCreator::GetDisplayInfo();
     const int W = info.width  > info.height ? info.width  : info.height;
     const int H = info.width  > info.height ? info.height : info.width;
+    LOGI("display: %dx%d  orientation=%u", info.width, info.height, info.orientation);
 
+    LOGI("ImGui::CreateContext");
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
 
@@ -52,6 +67,8 @@ int main() {
 
     ImGui::StyleColorsDark();
     ImGui::GetStyle().ScaleAllSizes(2.5f);
+
+    LOGI("LoadDefaultAndSystemCJKFont");
     aimgui::LoadDefaultAndSystemCJKFont(22.0f);
 
     aimgui::AppState st;
@@ -59,14 +76,17 @@ int main() {
 
     WindowCtx ctx;
     if (!BuildWindow(&ctx, W, H, st.permeate_record)) {
+        LOGE("BuildWindow failed at startup, exiting");
         ImGui::DestroyContext();
         return 1;
     }
     st.renderer_name = ctx.renderer->Name();
 
-    // readOnly = true: only read /dev/input/event* — do not create a uinput virtual device.
-    Touch::Init({(float)W, (float)H}, true);
+    LOGI("Touch::Init (readOnly)");
+    Touch::Init({(float)W, (float)H}, true);   // readOnly: no /dev/uinput, no virtual device
     Touch::setOrientation((int)info.orientation);
+
+    LOGI("entering main loop");
 
     using clock = std::chrono::steady_clock;
     auto last = clock::now();
@@ -89,8 +109,6 @@ int main() {
             Touch::setOrientation((int)info.orientation);
         }
 
-        // Mirror display has to be processed only when our surface is visible
-        // to recordings; when permeate_record is on, skip it.
         if (!st.permeate_record) {
             ANativeWindowCreator::ProcessMirrorDisplay();
         }
@@ -100,10 +118,10 @@ int main() {
         aimgui::AppFrame(&st, &running);
         ctx.renderer->EndFrame();
 
-        // Handle anti-record toggle requested from UI: tear down and rebuild.
         if (st.request_permeate_toggle) {
             st.request_permeate_toggle = false;
             st.permeate_record = !st.permeate_record;
+            LOGI("toggling permeate_record -> %d", st.permeate_record);
 
             DestroyWindow(&ctx);
             if (!BuildWindow(&ctx, W, H, st.permeate_record)) {
@@ -111,12 +129,15 @@ int main() {
                 break;
             }
             st.renderer_name = ctx.renderer->Name();
-            // The font atlas survives in ImGui context; the new renderer
-            // backend will lazily re-upload it on next frame.
         }
     }
 
+    LOGI("shutdown: stopping touch threads");
+    Touch::Close();
+    LOGI("shutdown: destroying renderer + window");
     DestroyWindow(&ctx);
+    LOGI("shutdown: destroying ImGui context");
     ImGui::DestroyContext();
+    LOGI("== AImGui exit ==");
     return 0;
 }
