@@ -1,5 +1,6 @@
 #include "ui/ui.h"
 
+#include "core/ime_bridge.h"
 #include "imgui.h"
 
 #include <cmath>
@@ -92,6 +93,12 @@ void DrawWidgets() {
     if (ImGui::Button("tap me")) counter++;
     ImGui::SameLine();
     ImGui::Text("count = %d", counter);
+
+    static char text[128] = "tap me, then a soft keyboard pops up";
+    ImGui::InputText("text", text, IM_ARRAYSIZE(text));
+    ImGui::TextDisabled("IME bridge: %s",
+                        ime::IsRunning() ? "ready (Java helper attached)"
+                                         : "off (push AImGui.dex next to the ELF)");
 
     ImGui::SliderFloat("slider", &slider, 0.0f, 1.0f, "%.3f");
     ImGui::Checkbox("toggle",  &toggle);

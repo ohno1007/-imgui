@@ -1,5 +1,6 @@
 // AImGui: a minimal Dear ImGui Android ARM64 ELF.
 #include "core/font.h"
+#include "core/ime_bridge.h"
 #include "core/keyboard_input.h"
 #include "core/renderer.h"
 #include "imgui.h"
@@ -94,6 +95,13 @@ int main() {
 
     aimgui::kbd_input::Init();
 
+    // Optional Java helper for system IME input. If the dex isn't beside
+    // the binary (or app_process refuses to launch) we silently carry on
+    // without IME — everything else still works.
+    aimgui::ime::Init("/data/local/tmp/AImGui.dex");
+
+    bool prev_want_text = false;
+
     auto last = clock::now();
     bool running = true;
     uint32_t cached_orientation = info.orientation;
@@ -126,11 +134,20 @@ int main() {
         }
 
         aimgui::kbd_input::Flush();
+        aimgui::ime::Flush();
 
         ctx.renderer->NewFrame();
         ImGui::NewFrame();
         aimgui::DrawUi(&st, &running);
         ctx.renderer->EndFrame();
+
+        // Bring the system IME up / down to follow ImGui's text-input focus.
+        const bool want_text = io.WantTextInput;
+        if (want_text != prev_want_text) {
+            if (want_text) aimgui::ime::Show();
+            else           aimgui::ime::Hide();
+            prev_want_text = want_text;
+        }
 
         pacer.Wait();
 
@@ -146,6 +163,7 @@ int main() {
         }
     }
 
+    aimgui::ime::Shutdown();
     aimgui::kbd_input::Shutdown();
     DestroyWindow(&ctx);
     ImGui::DestroyContext();

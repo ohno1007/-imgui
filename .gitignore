@@ -1,5 +1,6 @@
 obj/
 libs/
+java/build/
 *.o
 *.a
 .vscode/
