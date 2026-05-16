@@ -76,7 +76,9 @@ int main() {
     io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
 
     ImGui::StyleColorsDark();
-    aimgui::LoadDefaultAndSystemCJKFont(22.0f);
+    if (!ImGui::My_Android_LoadSystemFont(25.0f)) {
+        aimgui::LoadDefaultAndSystemCJKFont(25.0f);
+    }
 
     aimgui::UiState st;
     st.display_w = info.width;
