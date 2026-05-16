@@ -36,8 +36,23 @@ struct UiState {
     ImVec2 last_full_pos  = ImVec2(60, 100);
     ImVec2 last_full_size = ImVec2(900, 620);
 
+    // Bottom-right resize handle: a drag previews a thick rounded frame at
+    // the target size without changing the live window; on release the
+    // window springs from its current size to that target.
+    bool   resizing               = false;
+    ImVec2 resize_target_size     = ImVec2(900, 620);
+    ImVec2 resize_anim_vel        = ImVec2(0, 0);
+    ImVec2 resize_drag_start_mouse = ImVec2(0, 0);
+    ImVec2 resize_drag_start_size  = ImVec2(900, 620);
+
     // Post-process bloom intensity, applied at composite. 0 = bloom off.
     float bloom_intensity = 0.75f;
+
+    // Exit fragmentation animation: when the 退出 button is pressed, the
+    // UI shatters into falling chips and the process keeps running until
+    // the animation has played out (~1.2 s). DrawUi owns these.
+    bool  exit_anim_active = false;
+    float exit_anim_start  = 0.0f;
 };
 
 void DrawUi(UiState* state, bool* keep_running);

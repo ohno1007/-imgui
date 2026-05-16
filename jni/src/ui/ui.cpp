@@ -5,10 +5,155 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 namespace aimgui {
 
 namespace {
+
+// ─── MD3 ripple manager ──────────────────────────────────────────────────
+// Captures the tap position and rect of the last-drawn ImGui item when it
+// becomes active, then paints an expanding clipped white tint on the
+// foreground draw list. DrawAll() is called once per frame at the end of
+// the UI to advance and render all live ripples.
+namespace ripple {
+
+struct Entry {
+    ImGuiID id;
+    ImVec2  origin;
+    ImVec2  rect_min;
+    ImVec2  rect_max;
+    float   start;
+};
+
+std::vector<Entry> g_ripples;
+
+void TouchLastItem() {
+    if (!ImGui::IsItemActivated()) return;
+    Entry e;
+    e.id       = ImGui::GetItemID();
+    e.origin   = ImGui::GetIO().MousePos;
+    e.rect_min = ImGui::GetItemRectMin();
+    e.rect_max = ImGui::GetItemRectMax();
+    e.start    = (float)ImGui::GetTime();
+    g_ripples.push_back(e);
+}
+
+void DrawAll() {
+    const float now      = (float)ImGui::GetTime();
+    const float duration = 0.55f;
+
+    auto& v = g_ripples;
+    for (auto it = v.begin(); it != v.end(); ) {
+        const float t = (now - it->start) / duration;
+        if (t >= 1.0f) { it = v.erase(it); continue; }
+
+        const float ease   = 1.0f - (1.0f - t) * (1.0f - t); // quadratic ease-out
+        const float dx     = it->rect_max.x - it->rect_min.x;
+        const float dy     = it->rect_max.y - it->rect_min.y;
+        const float max_r  = std::sqrt(dx * dx + dy * dy);
+        const float radius = ease * max_r;
+        const float alpha  = (1.0f - t) * 0.22f;
+
+        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        dl->PushClipRect(it->rect_min, it->rect_max, true);
+        dl->AddCircleFilled(it->origin, radius,
+                            ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, alpha)),
+                            48);
+        dl->PopClipRect();
+        ++it;
+    }
+}
+
+} // namespace ripple
+
+// ─── Exit fragmentation animation ────────────────────────────────────────
+// On 退出 click we synthesize ~90 small rotating, gravity-affected chips
+// covering the current main window rect, fade the rest of the UI to zero,
+// then signal the main loop to quit after the animation has played out.
+namespace shatter {
+
+struct Chip {
+    ImVec2 pos;
+    ImVec2 vel;
+    float  rot;
+    float  rot_vel;
+    ImVec2 size;
+    ImU32  color;
+};
+
+std::vector<Chip> g_chips;
+
+uint32_t g_seed = 0x9e3779b9;
+uint32_t Rand() {
+    g_seed ^= g_seed << 13;
+    g_seed ^= g_seed >> 17;
+    g_seed ^= g_seed << 5;
+    return g_seed;
+}
+float Frand(float lo, float hi) {
+    return lo + ((Rand() & 0xFFFF) / 65535.0f) * (hi - lo);
+}
+
+void Begin(const ImVec2& origin, const ImVec2& size) {
+    g_chips.clear();
+    const int N = 120;
+    g_chips.reserve(N);
+
+    // Sample colors from current style for a coherent palette.
+    const ImU32 palette[4] = {
+        ImGui::GetColorU32(ImGuiCol_TitleBgActive),
+        ImGui::GetColorU32(ImVec4(0.22f, 0.40f, 0.78f, 1.0f)),
+        ImGui::GetColorU32(ImGuiCol_FrameBg),
+        ImGui::GetColorU32(ImVec4(0.30f, 0.62f, 1.0f, 1.0f)),
+    };
+
+    for (int i = 0; i < N; ++i) {
+        Chip c;
+        c.pos = ImVec2(origin.x + Frand(0.0f, size.x),
+                       origin.y + Frand(0.0f, size.y));
+        c.size = ImVec2(Frand(6.0f, 22.0f), Frand(6.0f, 22.0f));
+        c.vel = ImVec2(Frand(-220.0f, 220.0f),
+                       Frand(-420.0f, -80.0f)); // initial upward kick
+        c.rot = Frand(-3.14f, 3.14f);
+        c.rot_vel = Frand(-6.0f, 6.0f);
+        c.color = palette[i & 3];
+        g_chips.push_back(c);
+    }
+}
+
+// Advance & draw all chips on the foreground draw list. `t01` is the
+// global animation factor 0..1 (used only for alpha).
+void Step(float dt, float t01) {
+    constexpr float kGravity = 1800.0f; // px / s^2
+
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    for (auto& c : g_chips) {
+        c.vel.y += kGravity * dt;
+        c.pos.x += c.vel.x * dt;
+        c.pos.y += c.vel.y * dt;
+        c.rot   += c.rot_vel * dt;
+
+        const float cs = std::cos(c.rot);
+        const float sn = std::sin(c.rot);
+        const float hx = c.size.x * 0.5f;
+        const float hy = c.size.y * 0.5f;
+        const ImVec2 corners[4] = {
+            ImVec2(c.pos.x + (-hx * cs - -hy * sn), c.pos.y + (-hx * sn + -hy * cs)),
+            ImVec2(c.pos.x + ( hx * cs - -hy * sn), c.pos.y + ( hx * sn + -hy * cs)),
+            ImVec2(c.pos.x + ( hx * cs -  hy * sn), c.pos.y + ( hx * sn +  hy * cs)),
+            ImVec2(c.pos.x + (-hx * cs -  hy * sn), c.pos.y + (-hx * sn +  hy * cs)),
+        };
+
+        const float fade = 1.0f - t01;
+        const uint32_t a = (uint32_t)(255.0f * fade);
+        const ImU32 col = (c.color & 0x00FFFFFFu) | (a << 24);
+        dl->AddQuadFilled(corners[0], corners[1], corners[2], corners[3], col);
+    }
+}
+
+} // namespace shatter
+
 
 enum class Page { Dashboard, Widgets, Window, Performance, About };
 
@@ -48,7 +193,7 @@ void ApplyStyleOnce() {
     s.ItemSpacing             = ImVec2(14, 10);
     s.ItemInnerSpacing        = ImVec2(8, 6);
     s.FramePadding            = ImVec2(14, 10);
-    s.ScrollbarSize           = 18.0f;
+    s.ScrollbarSize           = 26.0f;
     s.GrabMinSize             = 16.0f;
     s.SeparatorTextBorderSize = 3.0f;
     s.SeparatorTextPadding    = ImVec2(28, 8);
@@ -144,11 +289,12 @@ void DrawWidgets() {
     static ImVec4 tint(0.40f, 0.70f, 1.00f, 1.0f);
 
     if (ImGui::Button(u8"点我"))  counter++;
+    ripple::TouchLastItem();
     ImGui::SameLine();
     ImGui::Text(u8"计数 = %d", counter);
 
     SliderFloatGrabValue(u8"滑块", &slider, 0.0f, 1.0f, "%.3f");
-    ImGui::Checkbox  (u8"开关",   &toggle);
+    ImGui::Checkbox  (u8"开关",   &toggle); ripple::TouchLastItem();
     ImGui::ColorEdit4(u8"取色器", (float*)&tint);
 
     ImGui::Spacing();
@@ -170,6 +316,7 @@ void DrawWidgets() {
 
         ImGui::SetNextItemOpen(list_open, ImGuiCond_FirstUseEver);
         list_open = ImGui::CollapsingHeader(u8"列表");
+        ripple::TouchLastItem();
 
         const float dt    = ImGui::GetIO().DeltaTime;
         const float alpha = 1.0f - std::exp(-14.0f * dt);
@@ -196,6 +343,7 @@ void DrawWidgets() {
             ImVec2 sel_min(0, 0), sel_max(0, 0);
             for (int i = 0; i < N; ++i) {
                 if (ImGui::Selectable(items[i], selected == i)) selected = i;
+                ripple::TouchLastItem();
                 if (selected == i) {
                     sel_min = ImGui::GetItemRectMin();
                     sel_max = ImGui::GetItemRectMax();
@@ -255,6 +403,7 @@ void DrawWindow(UiState* state) {
     if (ImGui::Checkbox(u8"防录屏(对屏幕录制 / 投屏隐藏)", &perm)) {
         state->request_permeate_toggle = true;
     }
+    ripple::TouchLastItem();
     ImGui::SameLine();
     ImGui::TextDisabled("[%s]", state->permeate_record ? u8"已开启" : u8"已关闭");
 
@@ -279,6 +428,7 @@ void DrawWindow(UiState* state) {
             case 2: ImGui::StyleColorsClassic(); break;
         }
     }
+    ripple::TouchLastItem();
 }
 
 void DrawPerformance(UiState* state) {
@@ -288,6 +438,7 @@ void DrawPerformance(UiState* state) {
     if (ImGui::Combo(u8"目标帧率", &fps_idx, kFpsLabels)) {
         state->target_fps = kFpsPresets[fps_idx];
     }
+    ripple::TouchLastItem();
 
     ImGui::Spacing();
     KV(u8"当前帧率", "%.1f FPS", ImGui::GetIO().Framerate);
@@ -325,7 +476,7 @@ void DrawAbout() {
 }
 
 // ─── Sidebar ─────────────────────────────────────────────────────────────
-void DrawSidebar(Page& current, bool* keep_running, const UiState* state) {
+void DrawSidebar(Page& current, bool* keep_running, UiState* state) {
     constexpr float kInnerPadX     = 18.0f;
     constexpr float kInnerPadY     = 14.0f;
     constexpr float kSelectableH   = 44.0f;
@@ -360,6 +511,7 @@ void DrawSidebar(Page& current, bool* keep_running, const UiState* state) {
         if (ImGui::Selectable(p.label, selected, 0, ImVec2(0, kSelectableH))) {
             current = p.id;
         }
+        ripple::TouchLastItem();
         if (selected) {
             ImVec2 a = ImGui::GetItemRectMin();
             ImVec2 b = ImGui::GetItemRectMax();
@@ -379,7 +531,14 @@ void DrawSidebar(Page& current, bool* keep_running, const UiState* state) {
     ImGui::Spacing();
 
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 12));
-    if (ImGui::Button(u8"退出", ImVec2(-1, 0))) *keep_running = false;
+    if (ImGui::Button(u8"退出", ImVec2(-1, 0))) {
+        if (!state->exit_anim_active) {
+            shatter::Begin(state->last_full_pos, state->last_full_size);
+            state->exit_anim_active = true;
+            state->exit_anim_start  = (float)ImGui::GetTime();
+        }
+    }
+    ripple::TouchLastItem();
     ImGui::PopStyleVar();
 
     ImGui::Dummy(ImVec2(0, kBottomMargin));
@@ -419,6 +578,62 @@ void DrawIslandContent() {
     ImGui::TextUnformatted(buf);
 }
 
+// Custom bottom-right resize handle: while held it builds up a target size
+// shown as a thick rounded preview frame, and on release UiState animates
+// the live window's size to that target via UpdateSpring.
+void DrawResizeGrip(UiState* state, const ImGuiIO& io) {
+    const ImVec2 wp = ImGui::GetWindowPos();
+    const ImVec2 ws = ImGui::GetWindowSize();
+
+    constexpr float kGrip = 32.0f;
+    const ImVec2 grip_min(wp.x + ws.x - kGrip, wp.y + ws.y - kGrip);
+    const ImVec2 grip_max(wp.x + ws.x, wp.y + ws.y);
+
+    ImGui::SetCursorScreenPos(grip_min);
+    ImGui::InvisibleButton("##resize_grip", ImVec2(kGrip, kGrip));
+
+    if (ImGui::IsItemActivated()) {
+        state->resizing               = true;
+        state->resize_drag_start_mouse = io.MousePos;
+        state->resize_drag_start_size  = ws;
+        state->resize_target_size      = ws;
+    }
+    if (state->resizing && ImGui::IsItemActive()) {
+        const ImVec2 d(io.MousePos.x - state->resize_drag_start_mouse.x,
+                       io.MousePos.y - state->resize_drag_start_mouse.y);
+        state->resize_target_size = ImVec2(
+            std::max(700.0f, state->resize_drag_start_size.x + d.x),
+            std::max(560.0f, state->resize_drag_start_size.y + d.y));
+    }
+    if (state->resizing && ImGui::IsItemDeactivated()) {
+        state->resizing = false;
+        state->resize_anim_vel = ImVec2(0, 0);
+    }
+
+    // Three diagonal pips in the corner so the grip reads as resizable.
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImU32 col = ImGui::GetColorU32(state->resizing ? ImGuiCol_ResizeGripActive
+                                                          : ImGuiCol_ResizeGrip);
+    for (int i = 0; i < 3; ++i) {
+        const float o = 6.0f + i * 6.0f;
+        dl->AddLine(ImVec2(grip_max.x - o, grip_max.y - 4),
+                    ImVec2(grip_max.x - 4, grip_max.y - o),
+                    col, 2.5f);
+    }
+
+    // Preview frame at the target size while the grip is held — thick line,
+    // rounded corners, drawn on the foreground so it sits above all chrome.
+    if (state->resizing) {
+        const ImVec2 a = wp;
+        const ImVec2 b(wp.x + state->resize_target_size.x,
+                       wp.y + state->resize_target_size.y);
+        ImGui::GetForegroundDrawList()->AddRect(
+            a, b,
+            ImGui::GetColorU32(ImVec4(0.30f, 0.62f, 1.0f, 0.95f)),
+            12.0f, 0, 5.0f);
+    }
+}
+
 // Critically-ish damped spring with mild overshoot for the "灵动" feel.
 void UpdateSpring(float* pos, float* vel, float target, float dt) {
     constexpr float kOmega = 12.0f;
@@ -440,6 +655,19 @@ void DrawUi(UiState* state, bool* keep_running) {
 
     ImGuiIO& io = ImGui::GetIO();
     const float dt = io.DeltaTime > 0.0f ? io.DeltaTime : 1.0f / 60.0f;
+
+    // Resize spring: when no drag is in progress, ease last_full_size
+    // toward whatever target the previous drag (if any) parked it at.
+    if (!state->resizing) {
+        UpdateSpring(&state->last_full_size.x, &state->resize_anim_vel.x,
+                     state->resize_target_size.x, dt);
+        UpdateSpring(&state->last_full_size.y, &state->resize_anim_vel.y,
+                     state->resize_target_size.y, dt);
+    } else {
+        // Hold the live window at the size it had when the drag started;
+        // the preview frame reads from resize_target_size.
+        state->last_full_size = state->resize_drag_start_size;
+    }
 
     const float target = state->collapsed ? 0.0f : 1.0f;
     UpdateSpring(&state->expand, &state->expand_vel, target, dt);
@@ -468,16 +696,22 @@ void DrawUi(UiState* state, bool* keep_running) {
         ImGui::SetNextWindowSize(win_size);
     } else {
         ImGui::SetNextWindowPos (state->last_full_pos,  ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(state->last_full_size, ImGuiCond_FirstUseEver);
+        // last_full_size is now driven by the custom resize spring, so
+        // push it every frame instead of only once.
+        ImGui::SetNextWindowSize(state->last_full_size, ImGuiCond_Always);
         ImGui::SetNextWindowSizeConstraints(ImVec2(700, 560), ImVec2(FLT_MAX, FLT_MAX));
     }
 
     const float rounding = (kIslandH * 0.5f) * (1.0f - lt) + 12.0f * lt;
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, rounding);
 
-    ImGuiWindowFlags flags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings;
+    // Suppress ImGui's built-in resize handle: the custom DrawResizeGrip
+    // (with preview-then-animate behaviour) owns resizing.
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoCollapse |
+                             ImGuiWindowFlags_NoSavedSettings |
+                             ImGuiWindowFlags_NoResize;
     if (!show_chrome) {
-        flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
+        flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove;
     }
 
     char title[64];
@@ -511,10 +745,44 @@ void DrawUi(UiState* state, bool* keep_running) {
 
             ImGui::PopStyleVar();
         }
+
+        // Custom resize grip lives only when the chrome is fully visible.
+        if (show_chrome) {
+            DrawResizeGrip(state, io);
+        }
     }
     ImGui::End();
 
     ImGui::PopStyleVar();   // WindowRounding
+
+    // Foreground overlays: ripples on every clickable widget, then the
+    // exit-fragmentation animation if 退出 was pressed.
+    ripple::DrawAll();
+
+    if (state->exit_anim_active) {
+        const float now     = (float)ImGui::GetTime();
+        const float t01     = (now - state->exit_anim_start) / 1.2f;
+        const float clamped = t01 < 0.0f ? 0.0f : (t01 > 1.0f ? 1.0f : t01);
+
+        // Mask the regular UI under a fade-in slab the same shape as the
+        // window, then draw the chips on top so they look like they peeled
+        // off the surface.
+        const ImVec2 a = state->last_full_pos;
+        const ImVec2 b = ImVec2(a.x + state->last_full_size.x,
+                                a.y + state->last_full_size.y);
+        const float mask_a = clamped * clamped; // ease-in to opaque
+        ImGui::GetForegroundDrawList()->AddRectFilled(
+            a, b,
+            ImGui::GetColorU32(ImVec4(0.05f, 0.06f, 0.08f, mask_a)),
+            12.0f);
+
+        shatter::Step(dt, clamped);
+
+        if (t01 >= 1.0f) {
+            state->exit_anim_active = false;
+            *keep_running = false;
+        }
+    }
 }
 
 } // namespace aimgui
