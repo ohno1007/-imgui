@@ -75,11 +75,15 @@ void HandleLine(const std::string& line) {
     } else if (line == "IME_HIDDEN") {
         g_ime_visible.store(false);
         LOGI("ime hidden");
-    } else if (line == "READY" || line == "PONG" ||
-               line == "VIEW_OK" || line == "VIEW_OK_FALLBACK") {
-        LOGI("helper: %s", line.c_str());
-    } else if (line.rfind("ERROR ", 0) == 0) {
+    } else if (line.rfind("FATAL ",   0) == 0 ||
+               line.rfind("ERROR ",   0) == 0) {
         LOGW("helper: %s", line.c_str());
+    } else if (line.rfind("DEBUG ",   0) == 0) {
+        LOGI("helper: %s", line.c_str());
+    } else {
+        // READY / PONG / VIEW_OK / VIEW_OK_FALLBACK / IME_SHOWN/HIDDEN already
+        // partially handled above; any other line just echoes to logcat.
+        LOGI("helper: %s", line.c_str());
     }
 }
 
