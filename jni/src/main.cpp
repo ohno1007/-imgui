@@ -155,6 +155,17 @@ int main() {
         aimgui::kbd_input::Flush();
         aimgui::ime::Flush();
 
+        // While the soft keyboard is on screen, the IME catches the user's
+        // taps in its own area — but we ALSO see those /dev/input events,
+        // and ImGui would interpret a tap outside the active InputText as
+        // "deactivate". Mask mouse input for the duration so the ImGui
+        // InputText stays the live target for incoming characters.
+        if (aimgui::ime::IsImeVisible() || io.WantTextInput) {
+            io.ConfigFlags |=  ImGuiConfigFlags_NoMouse;
+        } else {
+            io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
+        }
+
         ctx.renderer->NewFrame();
         ImGui::NewFrame();
         aimgui::DrawUi(&st, &running);

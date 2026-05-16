@@ -2,12 +2,14 @@ package com.aimgui;
 
 import android.content.Context;
 import android.graphics.PixelFormat;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
+import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
@@ -86,6 +88,30 @@ public final class Helper {
         sEdit = new EditText(ctx);
         sEdit.setSingleLine(false);
         sEdit.setFocusableInTouchMode(true);
+
+        // Detect IME open / close via WindowInsets so the native side can
+        // mask its mouse input only while the soft keyboard actually exists
+        // on screen.
+        sEdit.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+            private boolean prev = false;
+            @Override
+            public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
+                boolean shown;
+                if (Build.VERSION.SDK_INT >= 30) {
+                    shown = insets.isVisible(WindowInsets.Type.ime());
+                } else {
+                    // pre-R: no IME inset type; fall back to "bottom inset > 100"
+                    shown = insets.getSystemWindowInsetBottom() > 100;
+                }
+                if (shown != prev) {
+                    prev = shown;
+                    System.out.println(shown ? "IME_SHOWN" : "IME_HIDDEN");
+                    System.out.flush();
+                }
+                return insets;
+            }
+        });
+
         sEdit.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
             @Override public void afterTextChanged(Editable s) {}

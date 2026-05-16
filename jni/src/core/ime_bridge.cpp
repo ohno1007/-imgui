@@ -31,6 +31,7 @@ int                g_to_child = -1;
 int                g_from_child = -1;
 std::thread        g_reader;
 std::atomic<bool>  g_running{false};
+std::atomic<bool>  g_ime_visible{false};
 
 std::mutex                g_q_mtx;
 std::vector<std::string>  g_text_queue;
@@ -68,6 +69,12 @@ void HandleLine(const std::string& line) {
             std::lock_guard<std::mutex> lk(g_q_mtx);
             g_text_queue.push_back(std::move(text));
         }
+    } else if (line == "IME_SHOWN") {
+        g_ime_visible.store(true);
+        LOGI("ime shown");
+    } else if (line == "IME_HIDDEN") {
+        g_ime_visible.store(false);
+        LOGI("ime hidden");
     } else if (line == "READY" || line == "PONG" ||
                line == "VIEW_OK" || line == "VIEW_OK_FALLBACK") {
         LOGI("helper: %s", line.c_str());
@@ -180,9 +187,10 @@ bool Init(const char* dex_path) {
     return true;
 }
 
-bool IsRunning() { return g_running.load(); }
-void Show()      { WriteLine("SHOW"); }
-void Hide()      { WriteLine("HIDE"); }
+bool IsRunning()    { return g_running.load(); }
+bool IsImeVisible() { return g_ime_visible.load(); }
+void Show()         { WriteLine("SHOW"); }
+void Hide()         { WriteLine("HIDE"); }
 
 void Flush() {
     std::vector<std::string> drained;

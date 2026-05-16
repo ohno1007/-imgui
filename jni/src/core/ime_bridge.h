@@ -16,6 +16,10 @@ bool Init(const char* dex_path);
 // True after a successful Init() and before Shutdown() / child death.
 bool IsRunning();
 
+// True while the system soft keyboard is on-screen, per the helper's
+// WindowInsets listener.
+bool IsImeVisible();
+
 // Request the system IME to show / hide. No-op when not running.
 void Show();
 void Hide();
