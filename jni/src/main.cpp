@@ -1,5 +1,6 @@
 // AImGui: a minimal Dear ImGui Android ARM64 ELF.
 #include "app.h"
+#include "core/font.h"
 #include "core/renderer.h"
 #include "imgui.h"
 #include "platform/ANativeWindowCreator.h"
@@ -10,7 +11,9 @@
 
 int main() {
     using namespace android;
-    using aimgui::Renderer;
+    using aimgui::Backend;
+    using aimgui::IRenderer;
+    using aimgui::MakeRenderer;
 
     auto info = ANativeWindowCreator::GetDisplayInfo();
     const int W = info.width  > info.height ? info.width  : info.height;
@@ -22,10 +25,18 @@ int main() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
 
-    aimgui::AppInit();
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = nullptr;
+    io.LogFilename = nullptr;
+    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
 
-    Renderer renderer;
-    if (!renderer.Init(window, W, W)) {
+    ImGui::StyleColorsDark();
+    ImGui::GetStyle().ScaleAllSizes(2.5f);
+    aimgui::LoadDefaultAndSystemCJKFont(22.0f);
+
+    // Auto-pick: Vulkan first, OpenGL ES 3 fallback.
+    std::unique_ptr<IRenderer> renderer = MakeRenderer(window, W, W, Backend::Auto);
+    if (!renderer) {
         ImGui::DestroyContext();
         ANativeWindowCreator::Destroy(window);
         return 2;
@@ -33,6 +44,8 @@ int main() {
 
     Touch::Init({(float)W, (float)H}, false);
     Touch::setOrientation((int)info.orientation);
+
+    aimgui::AppInit(renderer->Name());
 
     using clock = std::chrono::steady_clock;
     auto last = clock::now();
@@ -47,7 +60,7 @@ int main() {
             continue;
         }
         last = now;
-        ImGui::GetIO().DeltaTime = dt > 0.f ? dt : 1.0f / 60.0f;
+        io.DeltaTime = dt > 0.f ? dt : 1.0f / 60.0f;
 
         info = ANativeWindowCreator::GetDisplayInfo();
         if (info.orientation != cached_orientation) {
@@ -57,13 +70,13 @@ int main() {
 
         ANativeWindowCreator::ProcessMirrorDisplay();
 
-        renderer.NewFrame();
+        renderer->NewFrame();
         ImGui::NewFrame();
         aimgui::AppFrame(&running);
-        renderer.EndFrame();
+        renderer->EndFrame();
     }
 
-    renderer.Shutdown();
+    renderer->Shutdown();
     ImGui::DestroyContext();
     ANativeWindowCreator::Destroy(window);
     return 0;

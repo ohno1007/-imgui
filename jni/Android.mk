@@ -1,28 +1,24 @@
-LOCAL_PATH := $(call my-dir)
+JNI_ROOT := $(call my-dir)
 
+# Pull in each static-library subproject.
+include $(JNI_ROOT)/src/imgui/Android.mk
+include $(JNI_ROOT)/src/platform/Android.mk
+include $(JNI_ROOT)/src/core/Android.mk
+
+# Final executable: app glue + linkage of the libs above.
 include $(CLEAR_VARS)
+LOCAL_PATH := $(JNI_ROOT)
 LOCAL_MODULE := AImGui
 
-LOCAL_CFLAGS   := -std=c17 -Wall
-LOCAL_CPPFLAGS := -std=c++17 -fexceptions -Wall
+LOCAL_CPPFLAGS := -std=c++17 -fexceptions
 
-LOCAL_C_INCLUDES := \
-    $(LOCAL_PATH)/src \
-    $(LOCAL_PATH)/src/imgui \
-    $(LOCAL_PATH)/src/imgui/backends \
-    $(LOCAL_PATH)/src/platform \
-    $(LOCAL_PATH)/src/core
+LOCAL_C_INCLUDES := $(LOCAL_PATH)/src
 
 LOCAL_SRC_FILES := \
     src/main.cpp \
-    src/app.cpp \
-    src/core/renderer.cpp \
-    src/platform/TouchHelperA.cpp \
-    src/imgui/imgui.cpp \
-    src/imgui/imgui_draw.cpp \
-    src/imgui/imgui_tables.cpp \
-    src/imgui/imgui_widgets.cpp \
-    src/imgui/backends/imgui_impl_opengl3.cpp
+    src/app.cpp
+
+LOCAL_STATIC_LIBRARIES := aimgui_core aimgui_platform imgui
 
 LOCAL_LDLIBS := -llog -landroid -lEGL -lGLESv3
 

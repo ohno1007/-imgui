@@ -2,7 +2,7 @@
 
 namespace aimgui {
 
-void AppInit();
+void AppInit(const char* renderer_name);
 void AppFrame(bool* keep_running);
 
 } // namespace aimgui

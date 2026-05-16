@@ -1,0 +1,16 @@
+LOCAL_PATH := $(call my-dir)
+
+include $(CLEAR_VARS)
+LOCAL_MODULE := aimgui_platform
+
+LOCAL_CPPFLAGS := -std=c++17 -fexceptions
+
+LOCAL_C_INCLUDES        := $(LOCAL_PATH)
+LOCAL_EXPORT_C_INCLUDES := $(LOCAL_PATH)
+
+LOCAL_SHARED_LIBRARIES :=
+LOCAL_STATIC_LIBRARIES := imgui
+
+LOCAL_SRC_FILES := TouchHelperA.cpp
+
+include $(BUILD_STATIC_LIBRARY)
