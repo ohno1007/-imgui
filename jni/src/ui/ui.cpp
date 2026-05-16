@@ -51,6 +51,11 @@ void ApplyStyleOnce() {
     s.GrabMinSize             = 16.0f;
     s.SeparatorTextBorderSize = 3.0f;
     s.SeparatorTextPadding    = ImVec2(28, 8);
+
+    // Keep the title bar painted with the focused/active color even when the
+    // window loses focus (we only have one window).
+    s.Colors[ImGuiCol_TitleBg]          = s.Colors[ImGuiCol_TitleBgActive];
+    s.Colors[ImGuiCol_TitleBgCollapsed] = s.Colors[ImGuiCol_TitleBgActive];
 }
 
 void KV(const char* key, const char* fmt, ...) {
@@ -196,7 +201,9 @@ void DrawSidebar(Page& current, bool* keep_running, const UiState* state) {
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,       ImVec2(kInnerPadX, kInnerPadY));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,         ImVec2(0, 4));
-    ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.0f, 0.5f));
+    // Inset the label inside the highlight rect so text doesn't touch the
+    // selected (blue) background's left edge.
+    ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.08f, 0.5f));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,        ImVec2(0, 6));
 
     ImGui::BeginChild("##sidebar", ImVec2(230, 0),
