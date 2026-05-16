@@ -18,8 +18,7 @@ LOCAL_C_INCLUDES := \
 
 LOCAL_SRC_FILES := \
     src/main.cpp \
-    src/ui/ui.cpp \
-    src/ui/keyboard.cpp
+    src/ui/ui.cpp
 
 LOCAL_STATIC_LIBRARIES := aimgui_core aimgui_platform imgui
 

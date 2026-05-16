@@ -1,5 +1,4 @@
 #include "ui/ui.h"
-#include "ui/keyboard.h"
 
 #include "imgui.h"
 
@@ -45,7 +44,7 @@ void ApplyStyleOnce() {
     s.WindowBorderSize        = 1.0f;
     s.FrameBorderSize         = 0.0f;
     s.WindowPadding           = ImVec2(0, 0);
-    s.ItemSpacing             = ImVec2(14, 12);
+    s.ItemSpacing             = ImVec2(14, 10);
     s.ItemInnerSpacing        = ImVec2(8, 6);
     s.FramePadding            = ImVec2(14, 10);
     s.ScrollbarSize           = 18.0f;
@@ -95,7 +94,10 @@ void DrawWidgets() {
     ImGui::Text("count = %d", counter);
 
     ImGui::InputText("text", text, IM_ARRAYSIZE(text));
-    kbd::TrackInputItem();                       // ← hook keyboard
+    ImGui::TextDisabled(
+        "InputText needs an external text source (system IME, hardware\n"
+        "keyboard, or a uinput-bridge IME); native ELFs have no\n"
+        "InputConnection to receive IME characters directly.");
 
     ImGui::SliderFloat("slider", &slider, 0.0f, 1.0f, "%.3f");
     ImGui::Checkbox("toggle",  &toggle);
@@ -183,69 +185,66 @@ void DrawAbout() {
     ImGui::BulletText("Vulkan + OpenGL ES 3 auto-fallback");
     ImGui::BulletText("VSync-locked frame pacer, near-zero CPU spin");
     ImGui::BulletText("Observe-only touch (no /dev/uinput, system unaffected)");
-    ImGui::BulletText("On-screen QWERTY for text input fields");
     ImGui::BulletText("Anti-recording surface toggle");
 }
 
 // ─── Sidebar ─────────────────────────────────────────────────────────────
 void DrawSidebar(Page& current, bool* keep_running, const UiState* state) {
+    // Sidebar has its own inner padding (left/right + top/bottom) so the
+    // selectables don't sit flush against the border.
+    constexpr float kInnerPadX  = 10.0f;
+    constexpr float kInnerPadY  = 12.0f;
+    constexpr float kSelectableH = 42.0f;
+
     ImGui::PushStyleColor(ImGuiCol_ChildBg,       ImVec4(0.07f, 0.08f, 0.10f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_Header,        ImVec4(0.18f, 0.32f, 0.58f, 0.55f));
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.22f, 0.28f, 0.35f, 0.55f));
     ImGui::PushStyleColor(ImGuiCol_HeaderActive,  ImVec4(0.22f, 0.40f, 0.78f, 0.85f));
 
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,       ImVec2(0, 0));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,         ImVec2(0, 4));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,       ImVec2(kInnerPadX, kInnerPadY));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,         ImVec2(0, 3));
     ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.0f, 0.5f));
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,        ImVec2(24, 8));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,        ImVec2(16, 6));
 
-    ImGui::BeginChild("##sidebar", ImVec2(210, 0),
-                      ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding);
+    ImGui::BeginChild("##sidebar", ImVec2(220, 0),
+                      ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding,
+                      ImGuiWindowFlags_NoScrollbar);
 
-    // ── title block ──────────────────────────────────────────────
-    ImGui::Dummy(ImVec2(0, 10));
-    ImGui::SetCursorPosX(24);
+    // ── compact title ────────────────────────────────────────────
     ImGui::TextUnformatted("AImGui");
-    ImGui::SetCursorPosX(24);
     ImGui::TextDisabled("v%s", ImGui::GetVersion());
-    ImGui::Dummy(ImVec2(0, 12));
+
+    ImGui::Spacing();
     ImGui::Separator();
-    ImGui::Dummy(ImVec2(0, 10));
+    ImGui::Spacing();
 
-    // ── nav items with a left-edge accent bar on the selected one ─
+    // ── nav items, accent bar on the left edge of the active one ─
     const ImU32 accent = ImGui::GetColorU32(ImVec4(0.30f, 0.62f, 1.0f, 1.0f));
-
     for (const auto& p : kPages) {
         bool selected = (current == p.id);
-        if (ImGui::Selectable(p.label, selected, 0, ImVec2(0, 48))) {
+        if (ImGui::Selectable(p.label, selected, 0, ImVec2(0, kSelectableH))) {
             current = p.id;
         }
         if (selected) {
             ImVec2 a = ImGui::GetItemRectMin();
             ImVec2 b = ImGui::GetItemRectMax();
             ImGui::GetWindowDrawList()->AddRectFilled(
-                ImVec2(a.x, a.y + 8),
-                ImVec2(a.x + 4, b.y - 8),
+                ImVec2(a.x, a.y + 6),
+                ImVec2(a.x + 4, b.y - 6),
                 accent, 2.0f);
         }
     }
 
-    // ── footer pinned to the bottom ──────────────────────────────
-    const float footer_h = 110.0f;
-    float remaining = ImGui::GetWindowHeight() - ImGui::GetCursorPosY() - footer_h;
+    // ── footer pinned at the bottom: small renderer label + exit btn ─
+    constexpr float kFooterH = 76.0f;
+    float remaining = ImGui::GetWindowHeight() - ImGui::GetCursorPosY() - kFooterH;
     if (remaining > 0) ImGui::Dummy(ImVec2(0, remaining));
 
     ImGui::Separator();
-    ImGui::Dummy(ImVec2(0, 8));
-    ImGui::SetCursorPosX(24);
-    ImGui::TextDisabled("renderer");
-    ImGui::SetCursorPosX(24);
-    ImGui::TextUnformatted(state->renderer_name ? state->renderer_name : "?");
-    ImGui::Dummy(ImVec2(0, 8));
-
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 10));
+    ImGui::Spacing();
+    ImGui::TextDisabled("%s", state->renderer_name ? state->renderer_name : "?");
+    ImGui::Spacing();
     if (ImGui::Button("exit", ImVec2(-1, 0))) *keep_running = false;
-    ImGui::PopStyleVar();
 
     ImGui::EndChild();
 
@@ -276,8 +275,8 @@ void DrawUi(UiState* state, bool* keep_running) {
     ApplyStyleOnce();
 
     ImGui::SetNextWindowPos (ImVec2(60, 100),  ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(880, 540), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSizeConstraints(ImVec2(680, 400), ImVec2(FLT_MAX, FLT_MAX));
+    ImGui::SetNextWindowSize(ImVec2(900, 620), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(700, 560), ImVec2(FLT_MAX, FLT_MAX));
 
     if (ImGui::Begin("AImGui", keep_running, ImGuiWindowFlags_NoCollapse)) {
         static Page page = Page::Dashboard;
@@ -286,9 +285,6 @@ void DrawUi(UiState* state, bool* keep_running) {
         DrawContent(state, page);
     }
     ImGui::End();
-
-    // Soft keyboard pops up automatically when an InputText is active.
-    kbd::Draw();
 }
 
 } // namespace aimgui
