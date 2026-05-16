@@ -47,11 +47,40 @@ public final class Helper {
 
     public static void main(String[] args) {
         out("READY");
+
+        // Bring up libbinder's thread pool BEFORE any system-service call —
+        // attach()/addView() callback into our process from AMS / WMS, and
+        // without a thread serving Binder transactions those callbacks just
+        // queue until the caller times out and SIGKILLs us.
+        startBinderThreadPool();
+
         try {
             runMain(args);
         } catch (Throwable t) {
             out("FATAL " + describe(t));
             System.exit(1);
+        }
+    }
+
+    private static void startBinderThreadPool() {
+        try {
+            final Class<?> bi = Class.forName("android.os.BinderInternal");
+            final java.lang.reflect.Method joinThreadPool = bi.getMethod("joinThreadPool");
+            for (int i = 0; i < 2; ++i) {
+                Thread bt = new Thread(new Runnable() {
+                    @Override public void run() {
+                        try { joinThreadPool.invoke(null); }
+                        catch (Throwable t) { out("DEBUG binder-pool died " + t.getMessage()); }
+                    }
+                }, "binder-pool-" + i);
+                bt.setDaemon(false);   // keep the JVM alive
+                bt.start();
+            }
+            // Give libbinder a moment to register the worker threads.
+            try { Thread.sleep(120); } catch (InterruptedException ignored) {}
+            out("DEBUG binder-pool-started");
+        } catch (Throwable t) {
+            out("DEBUG binder-pool-failed " + t.getMessage());
         }
     }
 
@@ -229,36 +258,44 @@ public final class Helper {
         return (Context) at.getMethod("getSystemContext").invoke(thread);
     }
 
-    // Attempt to make WMS recognise our PID by calling
-    // ActivityThread.attach(false[, startSeq]) via reflection. AMS will
-    // most likely reject the call because we weren't spawned by zygote,
-    // but on some forks (and some maintenance ROMs) the side effect of
-    // touching mAppThread / mInitialApplication is enough.
+    // Attempt to register our PID with AMS via ActivityThread.attach(false).
+    // Runs on a side thread with a 3-second cap so it never blocks setup —
+    // attach() can stall when binder isn't healthy.
     private static void tryAttachToAms() {
         if (sActivityThread == null) { out("DEBUG ams-attach-no-thread"); return; }
-        Class<?> at = sActivityThread.getClass();
-        for (Class<?>[] sig : new Class<?>[][] {
-                { boolean.class, long.class },
-                { boolean.class },
-        }) {
-            try {
-                java.lang.reflect.Method m = at.getDeclaredMethod("attach", sig);
-                m.setAccessible(true);
-                Object[] args = sig.length == 2 ? new Object[]{Boolean.FALSE, 0L}
-                                                : new Object[]{Boolean.FALSE};
-                m.invoke(sActivityThread, args);
-                out("DEBUG ams-attach-ok sig=" + sig.length);
-                return;
-            } catch (NoSuchMethodException nsme) {
-                // try the other signature
-            } catch (Throwable t) {
-                out("DEBUG ams-attach-failed sig=" + sig.length + " " +
-                    t.getClass().getSimpleName() + " " +
-                    (t.getCause() != null ? t.getCause().getMessage() : t.getMessage()));
-                return;
+        final Object thread = sActivityThread;
+        final Class<?> at = thread.getClass();
+
+        Thread t = new Thread(new Runnable() {
+            @Override public void run() {
+                for (Class<?>[] sig : new Class<?>[][] {
+                        { boolean.class, long.class },
+                        { boolean.class },
+                }) {
+                    try {
+                        java.lang.reflect.Method m = at.getDeclaredMethod("attach", sig);
+                        m.setAccessible(true);
+                        Object[] args = sig.length == 2 ? new Object[]{Boolean.FALSE, 0L}
+                                                        : new Object[]{Boolean.FALSE};
+                        m.invoke(thread, args);
+                        out("DEBUG ams-attach-ok sig=" + sig.length);
+                        return;
+                    } catch (NoSuchMethodException nsme) {
+                        // try next signature
+                    } catch (Throwable e) {
+                        Throwable c = (e.getCause() != null) ? e.getCause() : e;
+                        out("DEBUG ams-attach-failed sig=" + sig.length + " " +
+                            c.getClass().getSimpleName() + " " + c.getMessage());
+                        return;
+                    }
+                }
+                out("DEBUG ams-attach-no-method");
             }
-        }
-        out("DEBUG ams-attach-no-method");
+        }, "ams-attach");
+        t.setDaemon(true);
+        t.start();
+        try { t.join(3000); } catch (InterruptedException ignored) {}
+        if (t.isAlive()) out("DEBUG ams-attach-timeout-3s");
     }
 
     private static void readCommandsLoop() {
