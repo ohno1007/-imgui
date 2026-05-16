@@ -1,10 +1,10 @@
 // AImGui: a minimal Dear ImGui Android ARM64 ELF.
-#include "app.h"
 #include "core/font.h"
 #include "core/renderer.h"
 #include "imgui.h"
 #include "platform/ANativeWindowCreator.h"
 #include "platform/TouchHelperA.h"
+#include "ui/ui.h"
 
 #include <chrono>
 #include <thread>
@@ -33,10 +33,27 @@ void DestroyWindow(WindowCtx* ctx) {
     if (ctx->window)   { android::ANativeWindowCreator::Destroy(ctx->window); ctx->window = nullptr; }
 }
 
+// Sleep until `deadline`, or return immediately if it's already past. Uses
+// a coarse sleep for the bulk and a short spin for the last ~500µs so the
+// FPS cap is precise without burning CPU.
+void SleepUntil(std::chrono::steady_clock::time_point deadline) {
+    using namespace std::chrono;
+    auto now = steady_clock::now();
+    if (deadline <= now) return;
+    auto remaining = deadline - now;
+    if (remaining > microseconds(500)) {
+        std::this_thread::sleep_for(remaining - microseconds(500));
+    }
+    while (steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+}
+
 } // namespace
 
 int main() {
     using namespace android;
+    using clock = std::chrono::steady_clock;
 
     auto info = ANativeWindowCreator::GetDisplayInfo();
     const int W = info.width  > info.height ? info.width  : info.height;
@@ -54,8 +71,7 @@ int main() {
     ImGui::GetStyle().ScaleAllSizes(2.5f);
     aimgui::LoadDefaultAndSystemCJKFont(22.0f);
 
-    aimgui::AppState st;
-    st.permeate_record = false;
+    aimgui::UiState st;
 
     WindowCtx ctx;
     if (!BuildWindow(&ctx, W, H, st.permeate_record)) {
@@ -67,47 +83,46 @@ int main() {
     Touch::Init({(float)W, (float)H}, false);
     Touch::setOrientation((int)info.orientation);
 
-    using clock = std::chrono::steady_clock;
     auto last = clock::now();
-
     bool running = true;
     uint32_t cached_orientation = info.orientation;
+
     while (running) {
-        auto now = clock::now();
-        float dt = std::chrono::duration<float>(now - last).count();
-        last = now;
-        io.DeltaTime = dt > 0.f ? dt : 1.0f / 60.0f;
+        auto frame_start = clock::now();
+        io.DeltaTime = std::chrono::duration<float>(frame_start - last).count();
+        if (io.DeltaTime <= 0.f) io.DeltaTime = 1.0f / 60.0f;
+        last = frame_start;
 
         info = ANativeWindowCreator::GetDisplayInfo();
         if (info.orientation != cached_orientation) {
             cached_orientation = info.orientation;
             Touch::setOrientation((int)info.orientation);
         }
-
-        // Mirror display has to be processed only when our surface is visible
-        // to recordings; when permeate_record is on, skip it.
         if (!st.permeate_record) {
             ANativeWindowCreator::ProcessMirrorDisplay();
         }
 
         ctx.renderer->NewFrame();
         ImGui::NewFrame();
-        aimgui::AppFrame(&st, &running);
+        aimgui::DrawUi(&st, &running);
         ctx.renderer->EndFrame();
 
-        // Handle anti-record toggle requested from UI: tear down and rebuild.
+        // ── frame-rate cap ──────────────────────────────────────────
+        if (st.target_fps > 0) {
+            auto period = std::chrono::nanoseconds(1'000'000'000LL / st.target_fps);
+            SleepUntil(frame_start + period);
+        }
+
+        // ── anti-recording toggle ───────────────────────────────────
         if (st.request_permeate_toggle) {
             st.request_permeate_toggle = false;
             st.permeate_record = !st.permeate_record;
-
             DestroyWindow(&ctx);
             if (!BuildWindow(&ctx, W, H, st.permeate_record)) {
                 running = false;
                 break;
             }
             st.renderer_name = ctx.renderer->Name();
-            // The font atlas survives in ImGui context; the new renderer
-            // backend will lazily re-upload it on next frame.
         }
     }
 

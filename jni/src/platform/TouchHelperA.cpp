@@ -228,7 +228,8 @@ namespace Touch {
                         }
                     }
 
-                    if (!readOnly) {
+                    // AImGui patch: never re-inject events. We only observe.
+                    if (false /* was: !readOnly */) {
                         if (callback) {
                             callback(&devices);
                         } else {
@@ -312,7 +313,9 @@ namespace Touch {
                 if (ioctl(fd, EVIOCGABS(ABS_MT_POSITION_X), &device.absX) == 0
                     && ioctl(fd, EVIOCGABS(ABS_MT_POSITION_Y), &device.absY) == 0) {
                     device.fd = fd;
-                    if (!readOnly) {
+                    // AImGui patch: never EVIOCGRAB so the system still gets
+                    // touch events (no exclusive grab → phone stays usable).
+                    if (false /* was: !readOnly */) {
                         ioctl(fd, EVIOCGRAB, GRAB);
                     }
                     devices.push_back(device);
