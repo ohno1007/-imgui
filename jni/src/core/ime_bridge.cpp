@@ -179,10 +179,12 @@ bool Init(const char* dex_path) {
         else                            dir = ".";
 
         std::string cp_arg = "-Djava.class.path=" + dex;
+        std::string so_arg = "-Daimgui.helper.so=" + dir + "/libaimgui_helper.so";
 
         char* args[] = {
             (char*)"/system/bin/app_process",
             (char*)cp_arg.c_str(),
+            (char*)so_arg.c_str(),
             (char*)dir.c_str(),
             (char*)"com.aimgui.Helper",
             nullptr,

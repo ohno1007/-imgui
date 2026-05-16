@@ -98,24 +98,41 @@ public final class Helper {
     }
 
     private static void startBinderThreadPool() {
+        // 1) Try BinderInternal#joinThreadPool. Works on most Pixel-style
+        //    ROMs after the @hide bypass; fails with CNFE on ColorOS/MIUI
+        //    which add a class-level OEM blacklist on top of AOSP.
         try {
             final Class<?> bi = Class.forName("android.os.BinderInternal");
-            final java.lang.reflect.Method joinThreadPool = bi.getMethod("joinThreadPool");
+            final java.lang.reflect.Method jtp = bi.getMethod("joinThreadPool");
             for (int i = 0; i < 2; ++i) {
                 Thread bt = new Thread(new Runnable() {
                     @Override public void run() {
-                        try { joinThreadPool.invoke(null); }
+                        try { jtp.invoke(null); }
                         catch (Throwable t) { out("DEBUG binder-pool died " + t.getMessage()); }
                     }
                 }, "binder-pool-" + i);
-                bt.setDaemon(false);   // keep the JVM alive
+                bt.setDaemon(false);
                 bt.start();
             }
-            // Give libbinder a moment to register the worker threads.
             try { Thread.sleep(120); } catch (InterruptedException ignored) {}
-            out("DEBUG binder-pool-started");
+            out("DEBUG binder-pool-started via=BinderInternal");
+            return;
         } catch (Throwable t) {
-            out("DEBUG binder-pool-failed " + t.getMessage());
+            out("DEBUG binder-pool BinderInternal failed " + t.getClass().getSimpleName() + " " + t.getMessage());
+        }
+
+        // 2) Fallback: load libaimgui_helper.so and call its native bootstrap,
+        //    which dlopens libbinder.so and invokes ProcessState::startThreadPool
+        //    directly. Bypasses ColorOS's Java-side blacklist completely.
+        String soPath = System.getProperty("aimgui.helper.so",
+                "/data/local/tmp/libaimgui_helper.so");
+        try {
+            System.load(soPath);
+            boolean ok = BinderBoot.startThreadPool();
+            out("DEBUG binder-pool-started via=native ok=" + ok + " so=" + soPath);
+        } catch (Throwable t) {
+            out("DEBUG binder-pool native failed so=" + soPath + " " +
+                t.getClass().getSimpleName() + " " + t.getMessage());
         }
     }
 
