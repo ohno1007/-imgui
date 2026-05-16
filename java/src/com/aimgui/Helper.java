@@ -121,9 +121,20 @@ public final class Helper {
             out("DEBUG binder-pool BinderInternal failed " + t.getClass().getSimpleName() + " " + t.getMessage());
         }
 
-        // 2) Fallback: load libaimgui_helper.so and call its native bootstrap,
-        //    which dlopens libbinder.so and invokes ProcessState::startThreadPool
-        //    directly. Bypasses ColorOS's Java-side blacklist completely.
+        // 2) Fallback: load libaimgui_helper.so and call its native bootstrap.
+        //    But first poke the JVM's binder layer so libbinder.so is loaded
+        //    into our process — that puts its symbols into the global table,
+        //    where RTLD_DEFAULT can find them even when the linker namespace
+        //    forbids us from dlopening it ourselves.
+        try {
+            android.os.Binder b = new android.os.Binder();
+            android.os.Parcel p = android.os.Parcel.obtain();
+            p.recycle();
+            out("DEBUG primed libbinder via JVM Binder()/Parcel.obtain()");
+        } catch (Throwable t) {
+            out("DEBUG primer-failed " + t.getMessage());
+        }
+
         String soPath = System.getProperty("aimgui.helper.so",
                 "/data/local/tmp/libaimgui_helper.so");
         try {
