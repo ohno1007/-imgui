@@ -119,9 +119,21 @@ void SubdivideChip(const ImVec2& mn, const ImVec2& mx, int depth,
         c.size    = ImVec2(w, h);
         c.uv0     = ImVec2(mn.x / dw, mn.y / dh);
         c.uv1     = ImVec2(mx.x / dw, mx.y / dh);
-        c.vel     = ImVec2(Frand(-280.0f, 280.0f), Frand(-540.0f, -90.0f));
+
+        // Mass proxy: bigger area => heavier piece => falls harder + faster,
+        // less initial kick, slower spin. Smaller pieces fling further up,
+        // spin more, and drift down softly.
+        const float area  = w * h;
+        const float kRef  = 60.0f * 60.0f;
+        float mass        = std::sqrt(area / kRef);
+        if (mass < 0.5f) mass = 0.5f;
+        if (mass > 1.8f) mass = 1.8f;
+        const float inv   = 1.0f / mass;
+
+        c.vel     = ImVec2(Frand(-280.0f, 280.0f) * inv,
+                           Frand(-540.0f, -90.0f) * inv);
         c.rot     = 0.0f;
-        c.rot_vel = Frand(-5.5f, 5.5f);
+        c.rot_vel = Frand(-5.5f, 5.5f) * inv;
         c.color   = palette[(uint32_t)(c.pos.x + c.pos.y) & 3u];
         g_chips.push_back(c);
         return;
@@ -165,7 +177,14 @@ void Step(float dt, float t01, ImTextureID snapshot_tex) {
 
     ImDrawList* dl = ImGui::GetForegroundDrawList();
     for (auto& c : g_chips) {
-        c.vel.y += kGravity * dt;
+        // Bigger chips fall faster (heavier => higher effective gravity);
+        // small fragments stay aloft longer.
+        const float area = c.size.x * c.size.y;
+        float mass = std::sqrt(area / (60.0f * 60.0f));
+        if (mass < 0.5f) mass = 0.5f;
+        if (mass > 1.8f) mass = 1.8f;
+
+        c.vel.y += kGravity * mass * dt;
         c.pos.x += c.vel.x * dt;
         c.pos.y += c.vel.y * dt;
         c.rot   += c.rot_vel * dt;
@@ -649,9 +668,15 @@ void DrawIslandContent() {
 // rect excludes the very corner where the grip sits — an InvisibleButton
 // there was being clipped out by ItemAdd / IsClippedEx and never armed.
 // Drawing also goes to the foreground draw list to bypass the same clip.
+//
+// Geometry is anchored to state->last_full_pos/last_full_size (the main
+// window), NOT ImGui::GetWindowPos/Size — the latter inside DrawContent
+// returns the content child's pos/size, which is narrower than the main
+// window by the sidebar's width. Using it for drag_start_size caused the
+// live window to snap to the content's geometry as soon as the drag began.
 void DrawResizeGrip(UiState* state, const ImGuiIO& io) {
-    const ImVec2 wp = ImGui::GetWindowPos();
-    const ImVec2 ws = ImGui::GetWindowSize();
+    const ImVec2 wp = state->last_full_pos;
+    const ImVec2 ws = state->last_full_size;
 
     constexpr float kGrip = 40.0f;
     const ImVec2 grip_min(wp.x + ws.x - kGrip, wp.y + ws.y - kGrip);
