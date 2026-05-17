@@ -63,4 +63,11 @@ struct UiState {
 
 void DrawUi(UiState* state, bool* keep_running);
 
+namespace ripple {
+// Records an MD3 ripple at the last drawn item if it was just activated.
+// Call right after any clickable widget (Selectable / Button / Combo /
+// Checkbox / CollapsingHeader / ...) that you want to ripple.
+void TouchLastItem();
+} // namespace ripple
+
 } // namespace aimgui
