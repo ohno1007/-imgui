@@ -676,12 +676,19 @@ ImVec2 GripMax(const UiState* state) {
 // kick off both the grip drag (our code) and the main window's title-bar
 // move (ImGui's built-in), and the window would slide around under the
 // finger as the size grew.
+//
+// Hit-test is done with raw math (not ImGui::IsMouseHoveringRect) — that
+// helper defaults to clipping against the *current window*'s ClipRect, and
+// we're called outside any Begin/End so its clip rect is empty / wrong,
+// which silently produces "no hit" forever.
 void HandleResizeInput(UiState* state, const ImGuiIO& io) {
     const ImVec2 grip_min = GripMin(state);
     const ImVec2 grip_max = GripMax(state);
 
-    if (io.MouseClicked[0] && !state->resizing &&
-        ImGui::IsMouseHoveringRect(grip_min, grip_max)) {
+    const bool inside = io.MousePos.x >= grip_min.x && io.MousePos.x < grip_max.x &&
+                        io.MousePos.y >= grip_min.y && io.MousePos.y < grip_max.y;
+
+    if (io.MouseClicked[0] && !state->resizing && inside) {
         state->resizing                = true;
         state->resize_drag_start_mouse = io.MousePos;
         state->resize_drag_start_size  = state->last_full_size;
