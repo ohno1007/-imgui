@@ -107,6 +107,8 @@ public:
         return (unsigned long long)(uintptr_t)m_Bloom.GetSnapshotTex();
     }
 
+    void SetSnapshotFrozen(bool frozen) override { m_Bloom.SetSnapshotFrozen(frozen); }
+
 private:
     ANativeWindow* m_Window = nullptr;
     EGLDisplay m_Display = EGL_NO_DISPLAY;

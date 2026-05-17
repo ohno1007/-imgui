@@ -22,6 +22,12 @@ public:
     // handle suitable for casting to ImTextureID (used by the exit shatter
     // animation to draw real UI chips). Returns 0 if not available.
     virtual unsigned long long GetSceneSnapshotID() = 0;
+
+    // Freeze / unfreeze snapshot refresh. While frozen the renderer keeps
+    // serving the same prev-frame scene image instead of overwriting it
+    // with this frame's output — used during the exit shatter animation
+    // so all chips sample the clean pre-shatter UI.
+    virtual void SetSnapshotFrozen(bool frozen) = 0;
 };
 
 enum class Backend { Auto, Vulkan, OpenGL };

@@ -578,8 +578,9 @@ void DrawSidebar(Page& current, bool* keep_running, UiState* state) {
             const float dh = state->display_h > 0 ? (float)state->display_h
                                                   : io2.DisplaySize.y;
             shatter::Begin(state->last_full_pos, state->last_full_size, dw, dh);
-            state->exit_anim_active = true;
-            state->exit_anim_start  = (float)ImGui::GetTime();
+            state->exit_anim_active      = true;
+            state->exit_anim_first_frame = true;
+            state->exit_anim_start       = (float)ImGui::GetTime();
         }
     }
     ripple::TouchLastItem();
@@ -700,6 +701,26 @@ void DrawUi(UiState* state, bool* keep_running) {
     ImGuiIO& io = ImGui::GetIO();
     const float dt = io.DeltaTime > 0.0f ? io.DeltaTime : 1.0f / 60.0f;
 
+    // Past the click frame the entire main window stops rendering — the
+    // shatter chips, which sample the frozen pre-click scene snapshot,
+    // visually replace the UI. Where a chip has flown off, the rest of
+    // the system surface shows through (no mask, no leftover frame).
+    if (state->exit_anim_active && !state->exit_anim_first_frame) {
+        const float now     = (float)ImGui::GetTime();
+        const float t01     = (now - state->exit_anim_start) / 1.2f;
+        const float clamped = t01 < 0.0f ? 0.0f : (t01 > 1.0f ? 1.0f : t01);
+
+        ripple::DrawAll();
+        shatter::Step(dt, clamped,
+                      (ImTextureID)(uintptr_t)state->scene_snapshot_id);
+
+        if (t01 >= 1.0f) {
+            state->exit_anim_active = false;
+            *keep_running = false;
+        }
+        return;
+    }
+
     // Resize spring: when no drag is in progress, ease last_full_size
     // toward whatever target the previous drag (if any) parked it at.
     if (!state->resizing) {
@@ -799,34 +820,20 @@ void DrawUi(UiState* state, bool* keep_running) {
 
     ImGui::PopStyleVar();   // WindowRounding
 
-    // Foreground overlays: ripples on every clickable widget, then the
-    // exit-fragmentation animation if 退出 was pressed.
+    // Foreground overlays: ripples on every clickable widget.
     ripple::DrawAll();
 
-    if (state->exit_anim_active) {
+    // On the click frame the chips still need to be advanced/drawn so the
+    // visual is continuous with the next frame, but the UI under them is
+    // still the real one (so the user perceives the surface itself
+    // shattering). After this frame the early-return path takes over.
+    if (state->exit_anim_active && state->exit_anim_first_frame) {
         const float now     = (float)ImGui::GetTime();
         const float t01     = (now - state->exit_anim_start) / 1.2f;
         const float clamped = t01 < 0.0f ? 0.0f : (t01 > 1.0f ? 1.0f : t01);
-
-        // Mask the regular UI under a fade-in slab the same shape as the
-        // window, then draw the chips on top so they look like they peeled
-        // off the surface.
-        const ImVec2 a = state->last_full_pos;
-        const ImVec2 b = ImVec2(a.x + state->last_full_size.x,
-                                a.y + state->last_full_size.y);
-        const float mask_a = clamped * clamped; // ease-in to opaque
-        ImGui::GetForegroundDrawList()->AddRectFilled(
-            a, b,
-            ImGui::GetColorU32(ImVec4(0.05f, 0.06f, 0.08f, mask_a)),
-            12.0f);
-
         shatter::Step(dt, clamped,
                       (ImTextureID)(uintptr_t)state->scene_snapshot_id);
-
-        if (t01 >= 1.0f) {
-            state->exit_anim_active = false;
-            *keep_running = false;
-        }
+        state->exit_anim_first_frame = false;
     }
 }
 

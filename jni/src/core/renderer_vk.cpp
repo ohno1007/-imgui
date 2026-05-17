@@ -111,6 +111,8 @@ public:
         return (unsigned long long)(uintptr_t)m_Bloom.GetSnapshotDescriptorSet();
     }
 
+    void SetSnapshotFrozen(bool frozen) override { m_Bloom.SetSnapshotFrozen(frozen); }
+
 private:
     bool CreateInstance() {
         const char* exts[] = { "VK_KHR_surface", "VK_KHR_android_surface" };

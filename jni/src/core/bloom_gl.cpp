@@ -267,13 +267,14 @@ void BloomGL::EndSceneAndComposite() {
 
     // Snapshot the just-rendered scene into m_PrevSceneTex so the next
     // frame's shatter chips can sample what the UI looked like before
-    // they peeled off. ES 3.2 has glCopyImageSubData; ES 3.0 doesn't
-    // export it as a function but most Vulkan-capable devices have the
-    // EXT extension. Fall back to glCopyTexSubImage2D via the scene FBO.
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, m_SceneFBO);
-    glBindTexture(GL_TEXTURE_2D, m_PrevSceneTex);
-    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, m_Width, m_Height);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    // they peeled off. Skipped while frozen so chips keep sampling the
+    // pre-shatter UI throughout the exit animation.
+    if (!m_SnapshotFrozen) {
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, m_SceneFBO);
+        glBindTexture(GL_TEXTURE_2D, m_PrevSceneTex);
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, m_Width, m_Height);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    }
 }
 
 void BloomGL::Shutdown() {

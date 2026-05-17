@@ -44,6 +44,7 @@ public:
     bool Ready() const { return m_Ready; }
 
     void SetIntensity(float i) { m_Intensity = i; }
+    void SetSnapshotFrozen(bool frozen) { m_SnapshotFrozen = frozen; }
 
     VkRenderPass GetSceneRenderPass() const { return m_SceneRP; }
 
@@ -76,7 +77,8 @@ private:
     VkFormat         m_Format = VK_FORMAT_UNDEFINED;
     uint32_t         m_W = 0, m_H = 0;
     uint32_t         m_BW = 0, m_BH = 0;
-    float            m_Intensity = 0.75f;
+    float            m_Intensity      = 0.75f;
+    bool             m_SnapshotFrozen = false;
 
     VkRenderPass     m_SceneRP = VK_NULL_HANDLE;
     VkRenderPass     m_BlurRP  = VK_NULL_HANDLE;

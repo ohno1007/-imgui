@@ -458,6 +458,7 @@ void BloomVK::RecordCompositeDraw(VkCommandBuffer cmd) {
 
 void BloomVK::RecordSnapshotCopy(VkCommandBuffer cmd) {
     if (!m_Ready || m_PrevSceneImage == VK_NULL_HANDLE) return;
+    if (m_SnapshotFrozen) return; // keep serving the pre-shatter snapshot
 
     // scene image: SHADER_READ_ONLY (after RP) -> TRANSFER_SRC
     // prev image:  SHADER_READ_ONLY (or UNDEFINED first time) -> TRANSFER_DST

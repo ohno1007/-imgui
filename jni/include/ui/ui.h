@@ -51,8 +51,9 @@ struct UiState {
     // Exit fragmentation animation: when the 退出 button is pressed, the
     // UI shatters into falling chips and the process keeps running until
     // the animation has played out (~1.2 s). DrawUi owns these.
-    bool  exit_anim_active = false;
-    float exit_anim_start  = 0.0f;
+    bool  exit_anim_active      = false;
+    bool  exit_anim_first_frame = false; // click-frame grace; cleared at end of DrawUi
+    float exit_anim_start       = 0.0f;
 
     // Opaque ImTextureID-compatible handle to last frame's scene snapshot,
     // updated by main loop from IRenderer::GetSceneSnapshotID(). Lets the

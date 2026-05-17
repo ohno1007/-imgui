@@ -26,6 +26,7 @@ public:
     bool Ready() const { return m_Ready; }
 
     void SetIntensity(float i) { m_Intensity = i; }
+    void SetSnapshotFrozen(bool frozen) { m_SnapshotFrozen = frozen; }
 
     // GL texture handle of last frame's scene image. Sampleable as a
     // regular texture (ImTextureID = (intptr_t)tex). Returns 0 if bloom
@@ -41,7 +42,8 @@ private:
     int  m_Height = 0;
     int  m_BlurW  = 0;
     int  m_BlurH  = 0;
-    float m_Intensity = 0.75f;
+    float m_Intensity     = 0.75f;
+    bool  m_SnapshotFrozen = false;
 
     GLuint m_SceneFBO     = 0;
     GLuint m_SceneTex     = 0;
