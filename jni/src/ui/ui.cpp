@@ -626,7 +626,7 @@ void DrawSidebar(Page& current, bool* keep_running, UiState* state) {
 }
 
 // Forward decl — body lives further down, but DrawContent invokes it.
-void DrawResizeGrip(UiState* state, const ImGuiIO& io);
+void DrawResizeGrip(const UiState* state);
 
 void DrawContent(UiState* state, Page page) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(22, 18));
@@ -640,11 +640,8 @@ void DrawContent(UiState* state, Page page) {
         case Page::Performance: DrawPerformance(state); break;
         case Page::About:       DrawAbout();            break;
     }
-    // Resize grip lives inside the content child so its InvisibleButton
-    // sits in the same hit-test scope as everything below it — when it
-    // was placed in the outer main window, the content child captured the
-    // touch first and the grip never armed.
-    DrawResizeGrip(state, ImGui::GetIO());
+    // Pips + preview frame only (input handled before Begin in DrawUi).
+    DrawResizeGrip(state);
     ImGui::EndChild();
 
     ImGui::PopStyleVar();
@@ -662,34 +659,33 @@ void DrawIslandContent() {
     ImGui::TextUnformatted(buf);
 }
 
-// Custom bottom-right resize handle. Uses manual hit-testing
-// (IsMouseHoveringRect + io.MouseClicked[0]) instead of an InvisibleButton:
-// the content child window has AlwaysUseWindowPadding, so its inner clip
-// rect excludes the very corner where the grip sits — an InvisibleButton
-// there was being clipped out by ItemAdd / IsClippedEx and never armed.
-// Drawing also goes to the foreground draw list to bypass the same clip.
-//
-// Geometry is anchored to state->last_full_pos/last_full_size (the main
-// window), NOT ImGui::GetWindowPos/Size — the latter inside DrawContent
-// returns the content child's pos/size, which is narrower than the main
-// window by the sidebar's width. Using it for drag_start_size caused the
-// live window to snap to the content's geometry as soon as the drag began.
-void DrawResizeGrip(UiState* state, const ImGuiIO& io) {
-    const ImVec2 wp = state->last_full_pos;
-    const ImVec2 ws = state->last_full_size;
-
+// Bottom-right grip rect (in screen coords) anchored to the main window.
+ImVec2 GripMin(const UiState* state) {
     constexpr float kGrip = 40.0f;
-    const ImVec2 grip_min(wp.x + ws.x - kGrip, wp.y + ws.y - kGrip);
-    const ImVec2 grip_max(wp.x + ws.x, wp.y + ws.y);
+    return ImVec2(state->last_full_pos.x + state->last_full_size.x - kGrip,
+                  state->last_full_pos.y + state->last_full_size.y - kGrip);
+}
+ImVec2 GripMax(const UiState* state) {
+    return ImVec2(state->last_full_pos.x + state->last_full_size.x,
+                  state->last_full_pos.y + state->last_full_size.y);
+}
 
-    const bool inside  = ImGui::IsMouseHoveringRect(grip_min, grip_max);
-    const bool pressed = inside && io.MouseClicked[0] && !ImGui::IsAnyItemActive();
+// Resize input is detected BEFORE Begin so that the ImGuiWindowFlags_NoMove
+// can be applied this very frame to stop ImGui from also interpreting the
+// touch as a window-drag-start. Without this, a press on the grip would
+// kick off both the grip drag (our code) and the main window's title-bar
+// move (ImGui's built-in), and the window would slide around under the
+// finger as the size grew.
+void HandleResizeInput(UiState* state, const ImGuiIO& io) {
+    const ImVec2 grip_min = GripMin(state);
+    const ImVec2 grip_max = GripMax(state);
 
-    if (pressed) {
+    if (io.MouseClicked[0] && !state->resizing &&
+        ImGui::IsMouseHoveringRect(grip_min, grip_max)) {
         state->resizing                = true;
         state->resize_drag_start_mouse = io.MousePos;
-        state->resize_drag_start_size  = ws;
-        state->resize_target_size      = ws;
+        state->resize_drag_start_size  = state->last_full_size;
+        state->resize_target_size      = state->last_full_size;
     }
     if (state->resizing && io.MouseDown[0]) {
         const ImVec2 d(io.MousePos.x - state->resize_drag_start_mouse.x,
@@ -702,13 +698,20 @@ void DrawResizeGrip(UiState* state, const ImGuiIO& io) {
         state->resizing        = false;
         state->resize_anim_vel = ImVec2(0, 0);
     }
+}
 
+// Visual-only: pips at the corner + preview frame while resizing. Input
+// is handled by HandleResizeInput at the top of DrawUi.
+void DrawResizeGrip(const UiState* state) {
+    const ImVec2 grip_min = GripMin(state);
+    const ImVec2 grip_max = GripMax(state);
+
+    const bool inside = ImGui::IsMouseHoveringRect(grip_min, grip_max);
     ImDrawList* fg = ImGui::GetForegroundDrawList();
     const ImU32 col = ImGui::GetColorU32(
         state->resizing ? ImGuiCol_ResizeGripActive
                         : (inside ? ImGuiCol_ResizeGripHovered : ImGuiCol_ResizeGrip));
 
-    // Three diagonal pips in the corner so the grip reads as resizable.
     for (int i = 0; i < 3; ++i) {
         const float o = 8.0f + i * 7.0f;
         fg->AddLine(ImVec2(grip_max.x - o, grip_max.y - 5),
@@ -716,8 +719,6 @@ void DrawResizeGrip(UiState* state, const ImGuiIO& io) {
                     col, 3.0f);
     }
 
-    // Preview frame at the target size while the grip is held — thick line,
-    // rounded corners.
     if (state->resizing) {
         const ImVec2 a = state->last_full_pos;
         const ImVec2 b(a.x + state->resize_target_size.x,
@@ -770,6 +771,10 @@ void DrawUi(UiState* state, bool* keep_running) {
         return;
     }
 
+    // Handle grip press/drag/release first so the NoMove flag below sees
+    // an up-to-date state->resizing this frame.
+    HandleResizeInput(state, io);
+
     // Resize spring: when no drag is in progress, ease last_full_size
     // toward whatever target the previous drag (if any) parked it at.
     if (!state->resizing) {
@@ -820,12 +825,17 @@ void DrawUi(UiState* state, bool* keep_running) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, rounding);
 
     // Suppress ImGui's built-in resize handle: the custom DrawResizeGrip
-    // (with preview-then-animate behaviour) owns resizing.
+    // (with preview-then-animate behaviour) owns resizing. NoMove is also
+    // applied during a grip drag to stop ImGui from interpreting the same
+    // touch as a window-drag-start and sliding the window under the finger.
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoCollapse |
                              ImGuiWindowFlags_NoSavedSettings |
                              ImGuiWindowFlags_NoResize;
+    if (!show_chrome || state->resizing) {
+        flags |= ImGuiWindowFlags_NoMove;
+    }
     if (!show_chrome) {
-        flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove;
+        flags |= ImGuiWindowFlags_NoTitleBar;
     }
 
     char title[64];
