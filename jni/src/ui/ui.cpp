@@ -3,6 +3,7 @@
 #include "imgui.h"
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -74,12 +75,14 @@ void DrawAll() {
 namespace shatter {
 
 struct Chip {
-    ImVec2 pos;
+    ImVec2 pos;       // current screen-space center
     ImVec2 vel;
     float  rot;
     float  rot_vel;
     ImVec2 size;
-    ImU32  color;
+    ImU32  color;     // fallback solid color if no snapshot texture
+    ImVec2 uv0;       // top-left UV on the scene snapshot (set at spawn)
+    ImVec2 uv1;       // bottom-right UV (set at spawn)
 };
 
 std::vector<Chip> g_chips;
@@ -95,12 +98,16 @@ float Frand(float lo, float hi) {
     return lo + ((Rand() & 0xFFFF) / 65535.0f) * (hi - lo);
 }
 
-void Begin(const ImVec2& origin, const ImVec2& size) {
+// Spawn N chips whose UVs are pinned to the rect (origin, origin+size)
+// on a full-screen scene snapshot of dimensions (display_w, display_h).
+// Each chip's UV stays fixed while its world position drifts — so the
+// chip carries the piece of UI it tore off as it falls.
+void Begin(const ImVec2& origin, const ImVec2& size,
+           float display_w, float display_h) {
     g_chips.clear();
-    const int N = 120;
+    const int N = 160;
     g_chips.reserve(N);
 
-    // Sample colors from current style for a coherent palette.
     const ImU32 palette[4] = {
         ImGui::GetColorU32(ImGuiCol_TitleBgActive),
         ImGui::GetColorU32(ImVec4(0.22f, 0.40f, 0.78f, 1.0f)),
@@ -108,23 +115,41 @@ void Begin(const ImVec2& origin, const ImVec2& size) {
         ImGui::GetColorU32(ImVec4(0.30f, 0.62f, 1.0f, 1.0f)),
     };
 
-    for (int i = 0; i < N; ++i) {
-        Chip c;
-        c.pos = ImVec2(origin.x + Frand(0.0f, size.x),
-                       origin.y + Frand(0.0f, size.y));
-        c.size = ImVec2(Frand(6.0f, 22.0f), Frand(6.0f, 22.0f));
-        c.vel = ImVec2(Frand(-220.0f, 220.0f),
-                       Frand(-420.0f, -80.0f)); // initial upward kick
-        c.rot = Frand(-3.14f, 3.14f);
-        c.rot_vel = Frand(-6.0f, 6.0f);
-        c.color = palette[i & 3];
-        g_chips.push_back(c);
+    // Tile-ish layout: pick chip centers across the window in a randomised
+    // grid so the chips visibly tile the UI when t=0.
+    const int cols = 16;
+    const int rows = std::max(1, N / cols);
+    const float cw = size.x / (float)cols;
+    const float ch = size.y / (float)rows;
+
+    for (int j = 0; j < rows; ++j) {
+        for (int i = 0; i < cols; ++i) {
+            Chip c;
+            const float jx = Frand(-cw * 0.15f, cw * 0.15f);
+            const float jy = Frand(-ch * 0.15f, ch * 0.15f);
+            const float cx = origin.x + (i + 0.5f) * cw + jx;
+            const float cy = origin.y + (j + 0.5f) * ch + jy;
+            c.pos     = ImVec2(cx, cy);
+            c.size    = ImVec2(cw + Frand(-2.0f, 4.0f), ch + Frand(-2.0f, 4.0f));
+            c.vel     = ImVec2(Frand(-260.0f, 260.0f), Frand(-520.0f, -100.0f));
+            c.rot     = Frand(-0.4f, 0.4f);
+            c.rot_vel = Frand(-5.0f, 5.0f);
+            c.color   = palette[(i + j) & 3];
+
+            // UVs pin the chip to the screen region under it at spawn time.
+            const float hx = c.size.x * 0.5f;
+            const float hy = c.size.y * 0.5f;
+            c.uv0 = ImVec2((cx - hx) / display_w, (cy - hy) / display_h);
+            c.uv1 = ImVec2((cx + hx) / display_w, (cy + hy) / display_h);
+            g_chips.push_back(c);
+        }
     }
 }
 
-// Advance & draw all chips on the foreground draw list. `t01` is the
-// global animation factor 0..1 (used only for alpha).
-void Step(float dt, float t01) {
+// Advance + draw chips. If `snapshot_tex` is non-zero each chip is drawn as a
+// textured quad sampling the prev-frame scene snapshot at its pinned UVs
+// (real UI fragments). Otherwise each chip falls back to its solid colour.
+void Step(float dt, float t01, ImTextureID snapshot_tex) {
     constexpr float kGravity = 1800.0f; // px / s^2
 
     ImDrawList* dl = ImGui::GetForegroundDrawList();
@@ -147,8 +172,22 @@ void Step(float dt, float t01) {
 
         const float fade = 1.0f - t01;
         const uint32_t a = (uint32_t)(255.0f * fade);
-        const ImU32 col = (c.color & 0x00FFFFFFu) | (a << 24);
-        dl->AddQuadFilled(corners[0], corners[1], corners[2], corners[3], col);
+
+        if (snapshot_tex) {
+            // UVs are corners 0,1,2,3 in screen-pinned order → top-left,
+            // top-right, bottom-right, bottom-left of the chip's tile.
+            const ImU32 tint = 0x00FFFFFFu | (a << 24);
+            dl->AddImageQuad(snapshot_tex,
+                             corners[0], corners[1], corners[2], corners[3],
+                             ImVec2(c.uv0.x, c.uv0.y),
+                             ImVec2(c.uv1.x, c.uv0.y),
+                             ImVec2(c.uv1.x, c.uv1.y),
+                             ImVec2(c.uv0.x, c.uv1.y),
+                             tint);
+        } else {
+            const ImU32 col = (c.color & 0x00FFFFFFu) | (a << 24);
+            dl->AddQuadFilled(corners[0], corners[1], corners[2], corners[3], col);
+        }
     }
 }
 
@@ -533,7 +572,12 @@ void DrawSidebar(Page& current, bool* keep_running, UiState* state) {
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 12));
     if (ImGui::Button(u8"退出", ImVec2(-1, 0))) {
         if (!state->exit_anim_active) {
-            shatter::Begin(state->last_full_pos, state->last_full_size);
+            const ImGuiIO& io2 = ImGui::GetIO();
+            const float dw = state->display_w > 0 ? (float)state->display_w
+                                                  : io2.DisplaySize.x;
+            const float dh = state->display_h > 0 ? (float)state->display_h
+                                                  : io2.DisplaySize.y;
+            shatter::Begin(state->last_full_pos, state->last_full_size, dw, dh);
             state->exit_anim_active = true;
             state->exit_anim_start  = (float)ImGui::GetTime();
         }
@@ -776,7 +820,8 @@ void DrawUi(UiState* state, bool* keep_running) {
             ImGui::GetColorU32(ImVec4(0.05f, 0.06f, 0.08f, mask_a)),
             12.0f);
 
-        shatter::Step(dt, clamped);
+        shatter::Step(dt, clamped,
+                      (ImTextureID)(uintptr_t)state->scene_snapshot_id);
 
         if (t01 >= 1.0f) {
             state->exit_anim_active = false;

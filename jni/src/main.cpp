@@ -127,6 +127,7 @@ int main() {
         aimgui::kbd_input::Flush();
 
         ctx.renderer->NewFrame();
+        st.scene_snapshot_id = ctx.renderer->GetSceneSnapshotID();
         ImGui::NewFrame();
         aimgui::DrawUi(&st, &running);
         ctx.renderer->SetBloomIntensity(st.bloom_intensity);

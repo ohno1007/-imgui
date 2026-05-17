@@ -27,6 +27,11 @@ public:
 
     void SetIntensity(float i) { m_Intensity = i; }
 
+    // GL texture handle of last frame's scene image. Sampleable as a
+    // regular texture (ImTextureID = (intptr_t)tex). Returns 0 if bloom
+    // isn't initialised.
+    unsigned int GetSnapshotTex() const { return m_PrevSceneTex; }
+
     void BeginScene();
     void EndSceneAndComposite();
 
@@ -38,10 +43,11 @@ private:
     int  m_BlurH  = 0;
     float m_Intensity = 0.75f;
 
-    GLuint m_SceneFBO   = 0;
-    GLuint m_SceneTex   = 0;
-    GLuint m_BlurFBO[2] = { 0, 0 };
-    GLuint m_BlurTex[2] = { 0, 0 };
+    GLuint m_SceneFBO     = 0;
+    GLuint m_SceneTex     = 0;
+    GLuint m_PrevSceneTex = 0; // snapshot of previous frame's scene image
+    GLuint m_BlurFBO[2]   = { 0, 0 };
+    GLuint m_BlurTex[2]   = { 0, 0 };
 
     GLuint m_QuadVAO = 0;
     GLuint m_QuadVBO = 0;

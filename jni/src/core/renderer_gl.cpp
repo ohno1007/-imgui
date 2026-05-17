@@ -4,6 +4,7 @@
 
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
+#include <cstdint>
 
 #include "imgui.h"
 #include "imgui_impl_opengl3.h"
@@ -101,6 +102,10 @@ public:
     const char* Name() const override { return "OpenGL ES 3"; }
 
     void SetBloomIntensity(float i) override { m_Bloom.SetIntensity(i); }
+
+    unsigned long long GetSceneSnapshotID() override {
+        return (unsigned long long)(uintptr_t)m_Bloom.GetSnapshotTex();
+    }
 
 private:
     ANativeWindow* m_Window = nullptr;

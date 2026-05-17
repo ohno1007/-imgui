@@ -62,6 +62,11 @@ public:
         }
 
         SetupImGuiBackend();
+
+        // Now that ImGui's Vulkan impl has its descriptor pool wired up,
+        // hand it the prev-scene image so shatter chips can sample real UI.
+        if (m_Bloom.Ready()) m_Bloom.RegisterImGuiSnapshot();
+
         return true;
     }
 
@@ -101,6 +106,10 @@ public:
     const char* Name() const override { return "Vulkan"; }
 
     void SetBloomIntensity(float i) override { m_Bloom.SetIntensity(i); }
+
+    unsigned long long GetSceneSnapshotID() override {
+        return (unsigned long long)(uintptr_t)m_Bloom.GetSnapshotDescriptorSet();
+    }
 
 private:
     bool CreateInstance() {
@@ -256,6 +265,8 @@ private:
                                  m_WD->SurfaceFormat.format, m_Width, m_Height)) {
                     if (!m_Bloom.BindToSwapchainRenderPass(m_WD->RenderPass))
                         m_Bloom.Shutdown();
+                    else
+                        m_Bloom.RegisterImGuiSnapshot();
                 }
             }
         }
@@ -298,6 +309,10 @@ private:
             vkCmdBeginRenderPass(fd->CommandBuffer, &rpi, VK_SUBPASS_CONTENTS_INLINE);
             m_Bloom.RecordCompositeDraw(fd->CommandBuffer);
             vkCmdEndRenderPass(fd->CommandBuffer);
+
+            // Stash a copy of the just-rendered scene for next frame's
+            // shatter chips to sample.
+            m_Bloom.RecordSnapshotCopy(fd->CommandBuffer);
         } else {
             VkRenderPassBeginInfo rpi{};
             rpi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;

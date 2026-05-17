@@ -27,7 +27,7 @@ out vec4 fragColor;
 void main() {
     vec3 c = texture(uScene, vUv).rgb;
     float l = dot(c, vec3(0.299, 0.587, 0.114));
-    const float t = 0.6;
+    const float t = 0.30;
     float k = clamp((l - t) / max(0.01, 1.0 - t), 0.0, 1.0);
     fragColor = vec4(c * k, 1.0);
 }
@@ -146,6 +146,17 @@ bool BloomGL::Init(int width, int height) {
             return false;
         }
     }
+
+    // Snapshot texture (no FBO needed — it's only ever a copy target +
+    // sample source for the shatter chips).
+    glGenTextures(1, &m_PrevSceneTex);
+    glBindTexture(GL_TEXTURE_2D, m_PrevSceneTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, m_Width, m_Height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     static const float quad[] = {
@@ -217,20 +228,23 @@ void BloomGL::EndSceneAndComposite() {
     glUniform1i(m_LocThreshScene, 0);
     glDrawArrays(GL_TRIANGLES, 0, 6);
 
-    // 2) Horizontal blur: blur[0] -> blur[1]
-    glBindFramebuffer(GL_FRAMEBUFFER, m_BlurFBO[1]);
-    glUseProgram(m_ProgBlur);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, m_BlurTex[0]);
-    glUniform1i(m_LocBlurImage, 0);
-    glUniform2f(m_LocBlurDir, 1.0f / (float)m_BlurW, 0.0f);
-    glDrawArrays(GL_TRIANGLES, 0, 6);
+    // 2) Two iterations of H + V Gaussian for a wider, softer bloom.
+    for (int iter = 0; iter < 2; ++iter) {
+        // Horizontal: blur[0] -> blur[1]
+        glBindFramebuffer(GL_FRAMEBUFFER, m_BlurFBO[1]);
+        glUseProgram(m_ProgBlur);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, m_BlurTex[0]);
+        glUniform1i(m_LocBlurImage, 0);
+        glUniform2f(m_LocBlurDir, 1.0f / (float)m_BlurW, 0.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
 
-    // 3) Vertical blur: blur[1] -> blur[0]
-    glBindFramebuffer(GL_FRAMEBUFFER, m_BlurFBO[0]);
-    glBindTexture(GL_TEXTURE_2D, m_BlurTex[1]);
-    glUniform2f(m_LocBlurDir, 0.0f, 1.0f / (float)m_BlurH);
-    glDrawArrays(GL_TRIANGLES, 0, 6);
+        // Vertical: blur[1] -> blur[0]
+        glBindFramebuffer(GL_FRAMEBUFFER, m_BlurFBO[0]);
+        glBindTexture(GL_TEXTURE_2D, m_BlurTex[1]);
+        glUniform2f(m_LocBlurDir, 0.0f, 1.0f / (float)m_BlurH);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+    }
 
     // 4) Composite scene + bloom into the default framebuffer.
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -250,6 +264,16 @@ void BloomGL::EndSceneAndComposite() {
     glBindVertexArray(0);
     glUseProgram(0);
     glActiveTexture(GL_TEXTURE0);
+
+    // Snapshot the just-rendered scene into m_PrevSceneTex so the next
+    // frame's shatter chips can sample what the UI looked like before
+    // they peeled off. ES 3.2 has glCopyImageSubData; ES 3.0 doesn't
+    // export it as a function but most Vulkan-capable devices have the
+    // EXT extension. Fall back to glCopyTexSubImage2D via the scene FBO.
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, m_SceneFBO);
+    glBindTexture(GL_TEXTURE_2D, m_PrevSceneTex);
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, m_Width, m_Height);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
 }
 
 void BloomGL::Shutdown() {
@@ -257,6 +281,7 @@ void BloomGL::Shutdown() {
     if (m_QuadVAO)        glDeleteVertexArrays(1, &m_QuadVAO);
     if (m_SceneFBO)       glDeleteFramebuffers(1, &m_SceneFBO);
     if (m_SceneTex)       glDeleteTextures(1, &m_SceneTex);
+    if (m_PrevSceneTex)   glDeleteTextures(1, &m_PrevSceneTex);
     if (m_BlurFBO[0])     glDeleteFramebuffers(2, m_BlurFBO);
     if (m_BlurTex[0])     glDeleteTextures(2, m_BlurTex);
     if (m_ProgThreshold)  glDeleteProgram(m_ProgThreshold);
@@ -265,6 +290,7 @@ void BloomGL::Shutdown() {
 
     m_QuadVBO = m_QuadVAO = 0;
     m_SceneFBO = m_SceneTex = 0;
+    m_PrevSceneTex = 0;
     m_BlurFBO[0] = m_BlurFBO[1] = 0;
     m_BlurTex[0] = m_BlurTex[1] = 0;
     m_ProgThreshold = m_ProgBlur = m_ProgComposite = 0;

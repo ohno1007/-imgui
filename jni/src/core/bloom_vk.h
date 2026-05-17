@@ -51,9 +51,22 @@ public:
     // render pass whose attachment format matches the swapchain.
     bool BindToSwapchainRenderPass(VkRenderPass swapchainRP);
 
+    // Registers a sampleable snapshot of the scene image with ImGui's
+    // descriptor pool so shatter chips can read prev-frame UI as a
+    // texture. Must be called after ImGui_ImplVulkan_Init.
+    void RegisterImGuiSnapshot();
+
+    // Opaque handle suitable for casting to ImTextureID. Returns VK_NULL_HANDLE
+    // if RegisterImGuiSnapshot wasn't called or failed.
+    VkDescriptorSet GetSnapshotDescriptorSet() const { return m_PrevSceneImGuiDS; }
+
     void BeginScene(VkCommandBuffer cmd);
     void EndSceneAndBlur(VkCommandBuffer cmd);
     void RecordCompositeDraw(VkCommandBuffer cmd);
+
+    // Copy scene image → prev-scene image at the very end of the command
+    // buffer, so next frame's shatter chips have a fresh snapshot.
+    void RecordSnapshotCopy(VkCommandBuffer cmd);
 
 private:
     bool             m_Ready  = false;
@@ -72,6 +85,16 @@ private:
     VkImageView      m_SceneView  = VK_NULL_HANDLE;
     VkDeviceMemory   m_SceneMem   = VK_NULL_HANDLE;
     VkFramebuffer    m_SceneFB    = VK_NULL_HANDLE;
+
+    // Snapshot of the previous frame's scene, sampled by ImGui-issued
+    // shatter chip draws. Owned VkImage + view, plus a VkDescriptorSet
+    // borrowed from imgui's pool so we can hand its handle out as an
+    // ImTextureID.
+    VkImage          m_PrevSceneImage    = VK_NULL_HANDLE;
+    VkImageView      m_PrevSceneView     = VK_NULL_HANDLE;
+    VkDeviceMemory   m_PrevSceneMem      = VK_NULL_HANDLE;
+    VkDescriptorSet  m_PrevSceneImGuiDS  = VK_NULL_HANDLE;
+    bool             m_PrevSceneFirstUse = true;
 
     VkImage          m_BlurImage[2]{};
     VkImageView      m_BlurView[2]{};

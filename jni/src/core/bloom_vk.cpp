@@ -2,6 +2,9 @@
 
 #include "bloom_vk_spv.h"
 
+#include "imgui.h"
+#include "imgui_impl_vulkan.h"
+
 #include <android/log.h>
 #include <cstring>
 
@@ -259,6 +262,11 @@ bool BloomVK::Init(VkDevice device, VkPhysicalDevice phys, VkDescriptorPool pool
         !CreateFramebuffer(device, m_SceneRP, m_SceneView, m_W, m_H, &m_SceneFB)) {
         LOGE("scene image/FB"); Shutdown(); return false;
     }
+    if (!CreateImage2D(device, phys, fmt, m_W, m_H,
+                       &m_PrevSceneImage, &m_PrevSceneView, &m_PrevSceneMem)) {
+        LOGE("prev-scene image"); Shutdown(); return false;
+    }
+    m_PrevSceneFirstUse = true;
     for (int i = 0; i < 2; ++i) {
         if (!CreateImage2D(device, phys, fmt, m_BW, m_BH,
                            &m_BlurImage[i], &m_BlurView[i], &m_BlurMem[i]) ||
@@ -363,6 +371,15 @@ bool BloomVK::Init(VkDevice device, VkPhysicalDevice phys, VkDescriptorPool pool
     return true;
 }
 
+void BloomVK::RegisterImGuiSnapshot() {
+    if (!m_Ready || m_PrevSceneView == VK_NULL_HANDLE) return;
+    // ImGui's Vulkan impl gives us a descriptor set bound to (sampler, view,
+    // layout) suitable for use as ImTextureID.
+    m_PrevSceneImGuiDS = ImGui_ImplVulkan_AddTexture(
+        m_Sampler, m_PrevSceneView,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+}
+
 bool BloomVK::BindToSwapchainRenderPass(VkRenderPass swapchainRP) {
     if (!m_Ready) return false;
     if (m_PipeComp) {
@@ -416,15 +433,16 @@ void BloomVK::EndSceneAndBlur(VkCommandBuffer cmd) {
     // 1) threshold: scene -> blur[0]
     blur_pass(m_BlurFB[0], m_PipeThresh, m_DSThresh, pc);
 
-    // 2) horizontal blur: blur[0] -> blur[1]
-    pc.dir_x = 1.0f / (float)m_BW;
-    pc.dir_y = 0.0f;
-    blur_pass(m_BlurFB[1], m_PipeBlur, m_DSBlurH, pc);
+    // 2) Two iterations of separable Gaussian for a wider, softer glow.
+    for (int iter = 0; iter < 2; ++iter) {
+        pc.dir_x = 1.0f / (float)m_BW;
+        pc.dir_y = 0.0f;
+        blur_pass(m_BlurFB[1], m_PipeBlur, m_DSBlurH, pc);
 
-    // 3) vertical blur: blur[1] -> blur[0]
-    pc.dir_x = 0.0f;
-    pc.dir_y = 1.0f / (float)m_BH;
-    blur_pass(m_BlurFB[0], m_PipeBlur, m_DSBlurV, pc);
+        pc.dir_x = 0.0f;
+        pc.dir_y = 1.0f / (float)m_BH;
+        blur_pass(m_BlurFB[0], m_PipeBlur, m_DSBlurV, pc);
+    }
 }
 
 void BloomVK::RecordCompositeDraw(VkCommandBuffer cmd) {
@@ -436,6 +454,65 @@ void BloomVK::RecordCompositeDraw(VkCommandBuffer cmd) {
     pc.intensity = m_Intensity;
     vkCmdPushConstants(cmd, m_PLB, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
     vkCmdDraw(cmd, 3, 1, 0, 0);
+}
+
+void BloomVK::RecordSnapshotCopy(VkCommandBuffer cmd) {
+    if (!m_Ready || m_PrevSceneImage == VK_NULL_HANDLE) return;
+
+    // scene image: SHADER_READ_ONLY (after RP) -> TRANSFER_SRC
+    // prev image:  SHADER_READ_ONLY (or UNDEFINED first time) -> TRANSFER_DST
+    VkImageMemoryBarrier b[2]{};
+    b[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    b[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    b[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    b[0].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    b[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    b[0].srcQueueFamilyIndex = b[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b[0].image = m_SceneImage;
+    b[0].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+    b[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    b[1].srcAccessMask = m_PrevSceneFirstUse ? 0 : VK_ACCESS_SHADER_READ_BIT;
+    b[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    b[1].oldLayout = m_PrevSceneFirstUse ? VK_IMAGE_LAYOUT_UNDEFINED
+                                          : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    b[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b[1].srcQueueFamilyIndex = b[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b[1].image = m_PrevSceneImage;
+    b[1].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+    vkCmdPipelineBarrier(cmd,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0, 0, nullptr, 0, nullptr, 2, b);
+
+    VkImageCopy region{};
+    region.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    region.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    region.extent = { m_W, m_H, 1 };
+    vkCmdCopyImage(cmd,
+        m_SceneImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        m_PrevSceneImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1, &region);
+
+    // Transition both images back so the next frame's scene RP /
+    // fragment-shader sample finds them where they expect.
+    b[0].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    b[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    b[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    b[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    b[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    b[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    b[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b[1].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    vkCmdPipelineBarrier(cmd,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, nullptr, 0, nullptr, 2, b);
+
+    m_PrevSceneFirstUse = false;
 }
 
 void BloomVK::Shutdown() {
@@ -462,10 +539,15 @@ void BloomVK::Shutdown() {
     if (m_DSL1)        vkDestroyDescriptorSetLayout(m_Device, m_DSL1, nullptr);
     if (m_DSL2)        vkDestroyDescriptorSetLayout(m_Device, m_DSL2, nullptr);
     if (m_Sampler)     vkDestroySampler(m_Device, m_Sampler, nullptr);
-    if (m_SceneFB)     vkDestroyFramebuffer(m_Device, m_SceneFB, nullptr);
-    if (m_SceneView)   vkDestroyImageView(m_Device, m_SceneView, nullptr);
-    if (m_SceneImage)  vkDestroyImage(m_Device, m_SceneImage, nullptr);
-    if (m_SceneMem)    vkFreeMemory(m_Device, m_SceneMem, nullptr);
+    if (m_SceneFB)         vkDestroyFramebuffer(m_Device, m_SceneFB, nullptr);
+    if (m_SceneView)       vkDestroyImageView(m_Device, m_SceneView, nullptr);
+    if (m_SceneImage)      vkDestroyImage(m_Device, m_SceneImage, nullptr);
+    if (m_SceneMem)        vkFreeMemory(m_Device, m_SceneMem, nullptr);
+    if (m_PrevSceneView)   vkDestroyImageView(m_Device, m_PrevSceneView, nullptr);
+    if (m_PrevSceneImage)  vkDestroyImage(m_Device, m_PrevSceneImage, nullptr);
+    if (m_PrevSceneMem)    vkFreeMemory(m_Device, m_PrevSceneMem, nullptr);
+    // m_PrevSceneImGuiDS is owned by imgui's pool; it'll be freed when
+    // ImGui_ImplVulkan_Shutdown tears that pool down.
     for (int i = 0; i < 2; ++i) {
         if (m_BlurFB[i])     vkDestroyFramebuffer(m_Device, m_BlurFB[i], nullptr);
         if (m_BlurView[i])   vkDestroyImageView(m_Device, m_BlurView[i], nullptr);
