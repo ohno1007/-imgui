@@ -16,6 +16,7 @@ int main() {
 
     auto info = ANativeWindowCreator::GetDisplayInfo();
     const int W = info.width > info.height ? info.width : info.height;
+    const int H = info.width > info.height ? info.height : info.width;
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -31,7 +32,7 @@ int main() {
     aimgui::WindowSession ws;
     if (!ws.Build(W, st.permeate_record)) { ImGui::DestroyContext(); return 1; }
     st.renderer_name = ws.renderer()->Name();
-    Touch::Init({(float)W, (float)W}, false);
+    Touch::Init({(float)W, (float)H}, false);
     Touch::setOrientation((int)info.orientation);
     aimgui::kbd_input::Init();
 
