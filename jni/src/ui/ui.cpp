@@ -98,15 +98,52 @@ float Frand(float lo, float hi) {
     return lo + ((Rand() & 0xFFFF) / 65535.0f) * (hi - lo);
 }
 
-// Spawn N chips whose UVs are pinned to the rect (origin, origin+size)
-// on a full-screen scene snapshot of dimensions (display_w, display_h).
-// Each chip's UV stays fixed while its world position drifts — so the
-// chip carries the piece of UI it tore off as it falls.
+// Recursive longest-axis split with jittered midpoint and a random early
+// termination chance — produces tile-covered-but-irregular chips that
+// don't look like a regular grid.
+void SubdivideChip(const ImVec2& mn, const ImVec2& mx, int depth,
+                   float dw, float dh, const ImU32* palette) {
+    const float w = mx.x - mn.x;
+    const float h = mx.y - mn.y;
+    constexpr float kMinSize  = 18.0f;
+    constexpr int   kMaxDepth = 7;
+
+    const bool stop = depth >= kMaxDepth
+                   || w < kMinSize * 2.0f
+                   || h < kMinSize * 2.0f
+                   || (depth > 2 && Frand(0.0f, 1.0f) < 0.30f);
+
+    if (stop) {
+        Chip c;
+        c.pos     = ImVec2((mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f);
+        c.size    = ImVec2(w, h);
+        c.uv0     = ImVec2(mn.x / dw, mn.y / dh);
+        c.uv1     = ImVec2(mx.x / dw, mx.y / dh);
+        c.vel     = ImVec2(Frand(-280.0f, 280.0f), Frand(-540.0f, -90.0f));
+        c.rot     = 0.0f;
+        c.rot_vel = Frand(-5.5f, 5.5f);
+        c.color   = palette[(uint32_t)(c.pos.x + c.pos.y) & 3u];
+        g_chips.push_back(c);
+        return;
+    }
+
+    if (w > h) {
+        const float t  = 0.5f + Frand(-0.18f, 0.18f);
+        const float sx = mn.x + w * t;
+        SubdivideChip(mn, ImVec2(sx, mx.y), depth + 1, dw, dh, palette);
+        SubdivideChip(ImVec2(sx, mn.y), mx, depth + 1, dw, dh, palette);
+    } else {
+        const float t  = 0.5f + Frand(-0.18f, 0.18f);
+        const float sy = mn.y + h * t;
+        SubdivideChip(mn, ImVec2(mx.x, sy), depth + 1, dw, dh, palette);
+        SubdivideChip(ImVec2(mn.x, sy), mx, depth + 1, dw, dh, palette);
+    }
+}
+
 void Begin(const ImVec2& origin, const ImVec2& size,
            float display_w, float display_h) {
     g_chips.clear();
-    const int N = 160;
-    g_chips.reserve(N);
+    g_chips.reserve(200);
 
     const ImU32 palette[4] = {
         ImGui::GetColorU32(ImGuiCol_TitleBgActive),
@@ -115,35 +152,9 @@ void Begin(const ImVec2& origin, const ImVec2& size,
         ImGui::GetColorU32(ImVec4(0.30f, 0.62f, 1.0f, 1.0f)),
     };
 
-    // Tile-ish layout: pick chip centers across the window in a randomised
-    // grid so the chips visibly tile the UI when t=0.
-    const int cols = 16;
-    const int rows = std::max(1, N / cols);
-    const float cw = size.x / (float)cols;
-    const float ch = size.y / (float)rows;
-
-    for (int j = 0; j < rows; ++j) {
-        for (int i = 0; i < cols; ++i) {
-            Chip c;
-            const float jx = Frand(-cw * 0.15f, cw * 0.15f);
-            const float jy = Frand(-ch * 0.15f, ch * 0.15f);
-            const float cx = origin.x + (i + 0.5f) * cw + jx;
-            const float cy = origin.y + (j + 0.5f) * ch + jy;
-            c.pos     = ImVec2(cx, cy);
-            c.size    = ImVec2(cw + Frand(-2.0f, 4.0f), ch + Frand(-2.0f, 4.0f));
-            c.vel     = ImVec2(Frand(-260.0f, 260.0f), Frand(-520.0f, -100.0f));
-            c.rot     = Frand(-0.4f, 0.4f);
-            c.rot_vel = Frand(-5.0f, 5.0f);
-            c.color   = palette[(i + j) & 3];
-
-            // UVs pin the chip to the screen region under it at spawn time.
-            const float hx = c.size.x * 0.5f;
-            const float hy = c.size.y * 0.5f;
-            c.uv0 = ImVec2((cx - hx) / display_w, (cy - hy) / display_h);
-            c.uv1 = ImVec2((cx + hx) / display_w, (cy + hy) / display_h);
-            g_chips.push_back(c);
-        }
-    }
+    SubdivideChip(origin,
+                  ImVec2(origin.x + size.x, origin.y + size.y),
+                  0, display_w, display_h, palette);
 }
 
 // Advance + draw chips. If `snapshot_tex` is non-zero each chip is drawn as a
@@ -632,59 +643,63 @@ void DrawIslandContent() {
     ImGui::TextUnformatted(buf);
 }
 
-// Custom bottom-right resize handle: while held it builds up a target size
-// shown as a thick rounded preview frame, and on release UiState animates
-// the live window's size to that target via UpdateSpring.
+// Custom bottom-right resize handle. Uses manual hit-testing
+// (IsMouseHoveringRect + io.MouseClicked[0]) instead of an InvisibleButton:
+// the content child window has AlwaysUseWindowPadding, so its inner clip
+// rect excludes the very corner where the grip sits — an InvisibleButton
+// there was being clipped out by ItemAdd / IsClippedEx and never armed.
+// Drawing also goes to the foreground draw list to bypass the same clip.
 void DrawResizeGrip(UiState* state, const ImGuiIO& io) {
     const ImVec2 wp = ImGui::GetWindowPos();
     const ImVec2 ws = ImGui::GetWindowSize();
 
-    constexpr float kGrip = 32.0f;
+    constexpr float kGrip = 40.0f;
     const ImVec2 grip_min(wp.x + ws.x - kGrip, wp.y + ws.y - kGrip);
     const ImVec2 grip_max(wp.x + ws.x, wp.y + ws.y);
 
-    ImGui::SetCursorScreenPos(grip_min);
-    ImGui::InvisibleButton("##resize_grip", ImVec2(kGrip, kGrip));
+    const bool inside  = ImGui::IsMouseHoveringRect(grip_min, grip_max);
+    const bool pressed = inside && io.MouseClicked[0] && !ImGui::IsAnyItemActive();
 
-    if (ImGui::IsItemActivated()) {
-        state->resizing               = true;
+    if (pressed) {
+        state->resizing                = true;
         state->resize_drag_start_mouse = io.MousePos;
         state->resize_drag_start_size  = ws;
         state->resize_target_size      = ws;
     }
-    if (state->resizing && ImGui::IsItemActive()) {
+    if (state->resizing && io.MouseDown[0]) {
         const ImVec2 d(io.MousePos.x - state->resize_drag_start_mouse.x,
                        io.MousePos.y - state->resize_drag_start_mouse.y);
         state->resize_target_size = ImVec2(
             std::max(700.0f, state->resize_drag_start_size.x + d.x),
             std::max(560.0f, state->resize_drag_start_size.y + d.y));
     }
-    if (state->resizing && ImGui::IsItemDeactivated()) {
-        state->resizing = false;
+    if (state->resizing && !io.MouseDown[0]) {
+        state->resizing        = false;
         state->resize_anim_vel = ImVec2(0, 0);
     }
 
+    ImDrawList* fg = ImGui::GetForegroundDrawList();
+    const ImU32 col = ImGui::GetColorU32(
+        state->resizing ? ImGuiCol_ResizeGripActive
+                        : (inside ? ImGuiCol_ResizeGripHovered : ImGuiCol_ResizeGrip));
+
     // Three diagonal pips in the corner so the grip reads as resizable.
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImU32 col = ImGui::GetColorU32(state->resizing ? ImGuiCol_ResizeGripActive
-                                                          : ImGuiCol_ResizeGrip);
     for (int i = 0; i < 3; ++i) {
-        const float o = 6.0f + i * 6.0f;
-        dl->AddLine(ImVec2(grip_max.x - o, grip_max.y - 4),
-                    ImVec2(grip_max.x - 4, grip_max.y - o),
-                    col, 2.5f);
+        const float o = 8.0f + i * 7.0f;
+        fg->AddLine(ImVec2(grip_max.x - o, grip_max.y - 5),
+                    ImVec2(grip_max.x - 5, grip_max.y - o),
+                    col, 3.0f);
     }
 
     // Preview frame at the target size while the grip is held — thick line,
-    // rounded corners, drawn on the foreground so it sits above all chrome.
+    // rounded corners.
     if (state->resizing) {
-        const ImVec2 a = wp;
-        const ImVec2 b(wp.x + state->resize_target_size.x,
-                       wp.y + state->resize_target_size.y);
-        ImGui::GetForegroundDrawList()->AddRect(
-            a, b,
-            ImGui::GetColorU32(ImVec4(0.30f, 0.62f, 1.0f, 0.95f)),
-            12.0f, 0, 5.0f);
+        const ImVec2 a = state->last_full_pos;
+        const ImVec2 b(a.x + state->resize_target_size.x,
+                       a.y + state->resize_target_size.y);
+        fg->AddRect(a, b,
+                    ImGui::GetColorU32(ImVec4(0.30f, 0.62f, 1.0f, 0.95f)),
+                    12.0f, 0, 5.0f);
     }
 }
 
