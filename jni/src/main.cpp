@@ -1,158 +1,73 @@
 // AImGui: a minimal Dear ImGui Android ARM64 ELF.
 #include "core/font.h"
+#include "core/frame_pacer.h"
 #include "core/keyboard_input.h"
-#include "core/renderer.h"
+#include "core/window_session.h"
 #include "imgui.h"
 #include "platform/ANativeWindowCreator.h"
 #include "platform/TouchHelperA.h"
 #include "ui/ui.h"
 
 #include <chrono>
-#include <thread>
-
-namespace {
-
-struct WindowCtx {
-    ANativeWindow* window = nullptr;
-    std::unique_ptr<aimgui::IRenderer> renderer;
-};
-
-bool BuildWindow(WindowCtx* ctx, int W, int H, bool permeate_record) {
-    ctx->window = android::ANativeWindowCreator::Create("AImGui", W, W, permeate_record);
-    if (!ctx->window) return false;
-    ctx->renderer = aimgui::MakeRenderer(ctx->window, W, W, aimgui::Backend::Auto);
-    if (!ctx->renderer) {
-        android::ANativeWindowCreator::Destroy(ctx->window);
-        ctx->window = nullptr;
-        return false;
-    }
-    return true;
-}
-
-void DestroyWindow(WindowCtx* ctx) {
-    if (ctx->renderer) { ctx->renderer->Shutdown(); ctx->renderer.reset(); }
-    if (ctx->window)   { android::ANativeWindowCreator::Destroy(ctx->window); ctx->window = nullptr; }
-}
-
-// Drift-corrected frame pacer (see commit 58990ff).
-class FramePacer {
-public:
-    void SetTargetFps(int fps) {
-        if (fps == m_TargetFps) return;
-        m_TargetFps = fps;
-        m_Period    = fps > 0 ? std::chrono::nanoseconds(1'000'000'000LL / fps)
-                              : std::chrono::nanoseconds::zero();
-        m_NextDeadline = std::chrono::steady_clock::now();
-    }
-    void Wait() {
-        if (m_TargetFps <= 0) return;
-        auto now = std::chrono::steady_clock::now();
-        m_NextDeadline += m_Period;
-        if (m_NextDeadline < now) m_NextDeadline = now + m_Period;
-        std::this_thread::sleep_until(m_NextDeadline);
-    }
-private:
-    int m_TargetFps = 0;
-    std::chrono::nanoseconds m_Period{};
-    std::chrono::steady_clock::time_point m_NextDeadline{};
-};
-
-} // namespace
 
 int main() {
     using namespace android;
     using clock = std::chrono::steady_clock;
 
     auto info = ANativeWindowCreator::GetDisplayInfo();
-    const int W = info.width  > info.height ? info.width  : info.height;
-    const int H = info.width  > info.height ? info.height : info.width;
+    const int W = info.width > info.height ? info.width : info.height;
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-
-    ImGuiIO& io = ImGui::GetIO();
-    io.IniFilename = nullptr;
-    io.LogFilename = nullptr;
+    auto& io = ImGui::GetIO();
+    io.IniFilename = nullptr; io.LogFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
-
     ImGui::StyleColorsDark();
     aimgui::LoadDefaultAndSystemCJKFont(25.0f);
 
     aimgui::UiState st;
-    st.display_w = info.width;
-    st.display_h = info.height;
+    st.display_w = info.width; st.display_h = info.height;
 
-    WindowCtx ctx;
-    if (!BuildWindow(&ctx, W, H, st.permeate_record)) {
-        ImGui::DestroyContext();
-        return 1;
-    }
-    st.renderer_name = ctx.renderer->Name();
-
-    Touch::Init({(float)W, (float)H}, false);
+    aimgui::WindowSession ws;
+    if (!ws.Build(W, st.permeate_record)) { ImGui::DestroyContext(); return 1; }
+    st.renderer_name = ws.renderer()->Name();
+    Touch::Init({(float)W, (float)W}, false);
     Touch::setOrientation((int)info.orientation);
-
     aimgui::kbd_input::Init();
 
+    aimgui::FramePacer pacer;
     auto last = clock::now();
+    uint32_t orient = info.orientation;
     bool running = true;
-    uint32_t cached_orientation = info.orientation;
-
-    FramePacer pacer;
-
     while (running) {
-        auto frame_start = clock::now();
-        io.DeltaTime = std::chrono::duration<float>(frame_start - last).count();
-        if (io.DeltaTime <= 0.f) io.DeltaTime = 1.0f / 60.0f;
-        last = frame_start;
-
+        auto now = clock::now();
+        io.DeltaTime = std::max(1e-6f, std::chrono::duration<float>(now - last).count());
+        last = now;
         pacer.SetTargetFps(st.target_fps);
-
         info = ANativeWindowCreator::GetDisplayInfo();
-        st.display_w = info.width;
-        st.display_h = info.height;
-        if (info.orientation != cached_orientation) {
-            cached_orientation = info.orientation;
-            Touch::setOrientation((int)info.orientation);
-        }
-
-        if (aimgui::kbd_input::ConsumeVolumePresses() > 0) {
-            st.collapsed = !st.collapsed;
-        }
-
-        if (!st.permeate_record) {
-            ANativeWindowCreator::ProcessMirrorDisplay();
-        }
-
+        st.display_w = info.width; st.display_h = info.height;
+        if (info.orientation != orient) { orient = info.orientation; Touch::setOrientation((int)orient); }
+        if (aimgui::kbd_input::ConsumeVolumePresses() > 0) st.collapsed = !st.collapsed;
+        if (!st.permeate_record) ANativeWindowCreator::ProcessMirrorDisplay();
         aimgui::kbd_input::Flush();
 
-        ctx.renderer->NewFrame();
-        st.scene_snapshot_id = ctx.renderer->GetSceneSnapshotID();
+        ws.renderer()->NewFrame();
+        st.scene_snapshot_id = ws.renderer()->GetSceneSnapshotID();
         ImGui::NewFrame();
         aimgui::DrawUi(&st, &running);
-        ctx.renderer->SetBloomIntensity(st.bloom_intensity);
-        // Freeze the prev-scene snapshot while the exit animation runs so
-        // every shatter chip samples the clean pre-shatter UI rather than
-        // the increasingly-empty scene FBO of subsequent frames.
-        ctx.renderer->SetSnapshotFrozen(st.exit_anim_active);
-        ctx.renderer->EndFrame();
-
+        ws.renderer()->SetBloomIntensity(st.bloom_intensity);
+        ws.renderer()->SetSnapshotFrozen(st.exit_anim_active);
+        ws.renderer()->EndFrame();
         pacer.Wait();
 
         if (st.request_permeate_toggle) {
             st.request_permeate_toggle = false;
             st.permeate_record = !st.permeate_record;
-            DestroyWindow(&ctx);
-            if (!BuildWindow(&ctx, W, H, st.permeate_record)) {
-                running = false;
-                break;
-            }
-            st.renderer_name = ctx.renderer->Name();
+            ws.Destroy();
+            if (!ws.Build(W, st.permeate_record)) { running = false; break; }
+            st.renderer_name = ws.renderer()->Name();
         }
     }
-
     aimgui::kbd_input::Shutdown();
-    DestroyWindow(&ctx);
     ImGui::DestroyContext();
-    return 0;
 }

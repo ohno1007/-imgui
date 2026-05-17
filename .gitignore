@@ -1,5 +1,6 @@
 obj/
 libs/
+build/
 java/build/
 *.o
 *.a

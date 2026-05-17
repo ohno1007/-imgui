@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AImGui build script. Requires Android NDK (r25+). Set ANDROID_NDK_HOME.
+# AImGui CMake build. Requires Android NDK (r25+). Set ANDROID_NDK_HOME.
 set -euo pipefail
 
 NDK="${ANDROID_NDK_HOME:-${NDK_ROOT:-}}"
@@ -10,13 +10,23 @@ fi
 
 cd "$(dirname "$0")"
 
-"$NDK/ndk-build" -j"$(nproc 2>/dev/null || echo 4)" \
-    NDK_PROJECT_PATH=. \
-    APP_BUILD_SCRIPT=jni/Android.mk \
-    NDK_APPLICATION_MK=jni/Application.mk \
+ABI="${ABI:-arm64-v8a}"
+BUILD="build/${ABI}"
+
+cmake -S . -B "$BUILD" \
+    -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+    -DANDROID_ABI="$ABI" \
+    -DANDROID_PLATFORM=android-24 \
+    -DANDROID_STL=c++_static \
+    -DCMAKE_BUILD_TYPE=Release \
     "$@"
 
-OUT=libs/arm64-v8a/AImGui
+cmake --build "$BUILD" -j"$(nproc 2>/dev/null || echo 4)"
+
+mkdir -p "libs/${ABI}"
+cp "${BUILD}/AImGui" "libs/${ABI}/AImGui"
+
+OUT="libs/${ABI}/AImGui"
 if [[ -f "$OUT" ]]; then
     SIZE=$(stat -c '%s' "$OUT" 2>/dev/null || wc -c < "$OUT")
     printf '\n  ELF   : %s\n  size  : %s bytes (%.1f KB)\n' \
