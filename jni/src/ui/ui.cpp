@@ -572,12 +572,13 @@ void DrawSidebar(Page& current, bool* keep_running, UiState* state) {
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 12));
     if (ImGui::Button(u8"退出", ImVec2(-1, 0))) {
         if (!state->exit_anim_active) {
+            // UV normalisation must use the *snapshot texture* dimensions —
+            // which equal io.DisplaySize because the renderer sizes its
+            // scene image to that. state->display_w/h are the physical
+            // screen dimensions and would mis-map most chips off-frame.
             const ImGuiIO& io2 = ImGui::GetIO();
-            const float dw = state->display_w > 0 ? (float)state->display_w
-                                                  : io2.DisplaySize.x;
-            const float dh = state->display_h > 0 ? (float)state->display_h
-                                                  : io2.DisplaySize.y;
-            shatter::Begin(state->last_full_pos, state->last_full_size, dw, dh);
+            shatter::Begin(state->last_full_pos, state->last_full_size,
+                           io2.DisplaySize.x, io2.DisplaySize.y);
             state->exit_anim_active      = true;
             state->exit_anim_first_frame = true;
             state->exit_anim_start       = (float)ImGui::GetTime();
@@ -594,6 +595,9 @@ void DrawSidebar(Page& current, bool* keep_running, UiState* state) {
     ImGui::PopStyleColor(4);
 }
 
+// Forward decl — body lives further down, but DrawContent invokes it.
+void DrawResizeGrip(UiState* state, const ImGuiIO& io);
+
 void DrawContent(UiState* state, Page page) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(22, 18));
 
@@ -606,6 +610,11 @@ void DrawContent(UiState* state, Page page) {
         case Page::Performance: DrawPerformance(state); break;
         case Page::About:       DrawAbout();            break;
     }
+    // Resize grip lives inside the content child so its InvisibleButton
+    // sits in the same hit-test scope as everything below it — when it
+    // was placed in the outer main window, the content child captured the
+    // touch first and the grip never armed.
+    DrawResizeGrip(state, ImGui::GetIO());
     ImGui::EndChild();
 
     ImGui::PopStyleVar();
@@ -809,11 +818,6 @@ void DrawUi(UiState* state, bool* keep_running) {
             DrawContent(state, page);
 
             ImGui::PopStyleVar();
-        }
-
-        // Custom resize grip lives only when the chrome is fully visible.
-        if (show_chrome) {
-            DrawResizeGrip(state, io);
         }
     }
     ImGui::End();
