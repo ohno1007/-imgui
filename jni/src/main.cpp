@@ -76,7 +76,7 @@ int main() {
     io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
 
     ImGui::StyleColorsDark();
-    aimgui::LoadDefaultAndSystemCJKFont(22.0f);
+    aimgui::LoadDefaultAndSystemCJKFont(25.0f);
 
     aimgui::UiState st;
     st.display_w = info.width;
@@ -127,8 +127,14 @@ int main() {
         aimgui::kbd_input::Flush();
 
         ctx.renderer->NewFrame();
+        st.scene_snapshot_id = ctx.renderer->GetSceneSnapshotID();
         ImGui::NewFrame();
         aimgui::DrawUi(&st, &running);
+        ctx.renderer->SetBloomIntensity(st.bloom_intensity);
+        // Freeze the prev-scene snapshot while the exit animation runs so
+        // every shatter chip samples the clean pre-shatter UI rather than
+        // the increasingly-empty scene FBO of subsequent frames.
+        ctx.renderer->SetSnapshotFrozen(st.exit_anim_active);
         ctx.renderer->EndFrame();
 
         pacer.Wait();

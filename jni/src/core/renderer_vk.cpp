@@ -1,5 +1,6 @@
 #include "renderer.h"
 
+#include "bloom_vk.h"
 #include "vulkan_wrapper.h"
 #include <vulkan/vulkan_android.h>
 
@@ -50,7 +51,22 @@ public:
         if (!CreateLogicalDevice()) return false;
         if (!CreateDescriptorPool()) return false;
         if (!CreateSurfaceAndSwapchain()) return false;
+
+        // Try to set up the bloom pipeline. If it fails for any reason the
+        // renderer falls back to direct-to-swapchain ImGui rendering.
+        if (m_Bloom.Init(m_Device, m_PhysicalDevice, m_DescPool,
+                         m_WD->SurfaceFormat.format, m_Width, m_Height)) {
+            if (!m_Bloom.BindToSwapchainRenderPass(m_WD->RenderPass)) {
+                m_Bloom.Shutdown();
+            }
+        }
+
         SetupImGuiBackend();
+
+        // Now that ImGui's Vulkan impl has its descriptor pool wired up,
+        // hand it the prev-scene image so shatter chips can sample real UI.
+        if (m_Bloom.Ready()) m_Bloom.RegisterImGuiSnapshot();
+
         return true;
     }
 
@@ -73,6 +89,7 @@ public:
     void Shutdown() override {
         if (m_Device == VK_NULL_HANDLE) return;
         vkDeviceWaitIdle(m_Device);
+        m_Bloom.Shutdown();
         ImGui_ImplVulkan_Shutdown();
         if (m_WD) {
             ImGui_ImplVulkanH_DestroyWindow(m_Instance, m_Device, m_WD, nullptr);
@@ -87,6 +104,14 @@ public:
     }
 
     const char* Name() const override { return "Vulkan"; }
+
+    void SetBloomIntensity(float i) override { m_Bloom.SetIntensity(i); }
+
+    unsigned long long GetSceneSnapshotID() override {
+        return (unsigned long long)(uintptr_t)m_Bloom.GetSnapshotDescriptorSet();
+    }
+
+    void SetSnapshotFrozen(bool frozen) override { m_Bloom.SetSnapshotFrozen(frozen); }
 
 private:
     bool CreateInstance() {
@@ -209,7 +234,10 @@ private:
         ii.QueueFamily = m_QueueFamily;
         ii.Queue = m_Queue;
         ii.DescriptorPool = m_DescPool;
-        ii.PipelineInfoMain.RenderPass = m_WD->RenderPass;
+        // ImGui renders into the offscreen scene pass when bloom is wired up;
+        // otherwise it draws straight into the swapchain.
+        ii.PipelineInfoMain.RenderPass = m_Bloom.Ready() ? m_Bloom.GetSceneRenderPass()
+                                                        : m_WD->RenderPass;
         ii.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
         ii.MinImageCount = m_MinImageCount;
         ii.ImageCount = m_WD->ImageCount;
@@ -229,6 +257,20 @@ private:
                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
             m_WD->FrameIndex = 0;
             m_Width = w; m_Height = h;
+
+            // Tear down and rebuild bloom against the new dimensions and
+            // swapchain render pass. If anything fails we fall back to the
+            // direct-to-swapchain path automatically.
+            if (m_Bloom.Ready()) {
+                m_Bloom.Shutdown();
+                if (m_Bloom.Init(m_Device, m_PhysicalDevice, m_DescPool,
+                                 m_WD->SurfaceFormat.format, m_Width, m_Height)) {
+                    if (!m_Bloom.BindToSwapchainRenderPass(m_WD->RenderPass))
+                        m_Bloom.Shutdown();
+                    else
+                        m_Bloom.RegisterImGuiSnapshot();
+                }
+            }
         }
         m_SwapChainRebuild = false;
     }
@@ -250,19 +292,43 @@ private:
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         vkBeginCommandBuffer(fd->CommandBuffer, &bi);
 
-        VkRenderPassBeginInfo rpi{};
-        rpi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        rpi.renderPass = m_WD->RenderPass;
-        rpi.framebuffer = fd->Framebuffer;
-        rpi.renderArea.extent.width = m_WD->Width;
-        rpi.renderArea.extent.height = m_WD->Height;
-        rpi.clearValueCount = 1;
-        rpi.pClearValues = &m_WD->ClearValue;
-        vkCmdBeginRenderPass(fd->CommandBuffer, &rpi, VK_SUBPASS_CONTENTS_INLINE);
+        if (m_Bloom.Ready()) {
+            // ImGui draws into the offscreen scene image, then threshold +
+            // separable Gaussian blur populate the bloom image, and the
+            // composite pass writes scene + bloom into the swapchain.
+            m_Bloom.BeginScene(fd->CommandBuffer);
+            ImGui_ImplVulkan_RenderDrawData(draw, fd->CommandBuffer);
+            m_Bloom.EndSceneAndBlur(fd->CommandBuffer);
 
-        ImGui_ImplVulkan_RenderDrawData(draw, fd->CommandBuffer);
+            VkRenderPassBeginInfo rpi{};
+            rpi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+            rpi.renderPass = m_WD->RenderPass;
+            rpi.framebuffer = fd->Framebuffer;
+            rpi.renderArea.extent.width  = m_WD->Width;
+            rpi.renderArea.extent.height = m_WD->Height;
+            rpi.clearValueCount = 1;
+            rpi.pClearValues = &m_WD->ClearValue;
+            vkCmdBeginRenderPass(fd->CommandBuffer, &rpi, VK_SUBPASS_CONTENTS_INLINE);
+            m_Bloom.RecordCompositeDraw(fd->CommandBuffer);
+            vkCmdEndRenderPass(fd->CommandBuffer);
 
-        vkCmdEndRenderPass(fd->CommandBuffer);
+            // Stash a copy of the just-rendered scene for next frame's
+            // shatter chips to sample.
+            m_Bloom.RecordSnapshotCopy(fd->CommandBuffer);
+        } else {
+            VkRenderPassBeginInfo rpi{};
+            rpi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+            rpi.renderPass = m_WD->RenderPass;
+            rpi.framebuffer = fd->Framebuffer;
+            rpi.renderArea.extent.width  = m_WD->Width;
+            rpi.renderArea.extent.height = m_WD->Height;
+            rpi.clearValueCount = 1;
+            rpi.pClearValues = &m_WD->ClearValue;
+            vkCmdBeginRenderPass(fd->CommandBuffer, &rpi, VK_SUBPASS_CONTENTS_INLINE);
+            ImGui_ImplVulkan_RenderDrawData(draw, fd->CommandBuffer);
+            vkCmdEndRenderPass(fd->CommandBuffer);
+        }
+
         vkEndCommandBuffer(fd->CommandBuffer);
 
         VkPipelineStageFlags stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -301,6 +367,7 @@ private:
     int m_Height = 0;
     int m_MinImageCount = 2;
     bool m_SwapChainRebuild = false;
+    BloomVK m_Bloom;
 };
 
 } // namespace

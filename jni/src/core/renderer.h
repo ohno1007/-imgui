@@ -13,6 +13,21 @@ public:
     virtual void EndFrame() = 0;
     virtual void Shutdown() = 0;
     virtual const char* Name() const = 0;
+
+    // Post-process bloom intensity (0 = off, ~1 = strong). No-op if the
+    // backend's bloom isn't ready.
+    virtual void SetBloomIntensity(float intensity) = 0;
+
+    // Sampleable snapshot of the previous frame's scene image as an opaque
+    // handle suitable for casting to ImTextureID (used by the exit shatter
+    // animation to draw real UI chips). Returns 0 if not available.
+    virtual unsigned long long GetSceneSnapshotID() = 0;
+
+    // Freeze / unfreeze snapshot refresh. While frozen the renderer keeps
+    // serving the same prev-frame scene image instead of overwriting it
+    // with this frame's output — used during the exit shatter animation
+    // so all chips sample the clean pre-shatter UI.
+    virtual void SetSnapshotFrozen(bool frozen) = 0;
 };
 
 enum class Backend { Auto, Vulkan, OpenGL };

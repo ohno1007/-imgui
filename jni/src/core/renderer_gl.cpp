@@ -1,7 +1,10 @@
 #include "renderer.h"
 
+#include "bloom_gl.h"
+
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
+#include <cstdint>
 
 #include "imgui.h"
 #include "imgui_impl_opengl3.h"
@@ -55,7 +58,9 @@ public:
         glViewport(0, 0, width, height);
         glClearColor(0.f, 0.f, 0.f, 0.f);
 
-        return ImGui_ImplOpenGL3_Init("#version 300 es");
+        if (!ImGui_ImplOpenGL3_Init("#version 300 es")) return false;
+        m_Bloom.Init(width, height); // best-effort; renderer still works if it fails
+        return true;
     }
 
     void NewFrame() override {
@@ -67,12 +72,21 @@ public:
 
     void EndFrame() override {
         ImGui::Render();
-        glClear(GL_COLOR_BUFFER_BIT);
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        if (m_Bloom.Ready()) {
+            m_Bloom.BeginScene();
+            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+            m_Bloom.EndSceneAndComposite();
+        } else {
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glViewport(0, 0, m_Width, m_Height);
+            glClear(GL_COLOR_BUFFER_BIT);
+            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        }
         eglSwapBuffers(m_Display, m_Surface);
     }
 
     void Shutdown() override {
+        m_Bloom.Shutdown();
         ImGui_ImplOpenGL3_Shutdown();
         if (m_Display != EGL_NO_DISPLAY) {
             eglMakeCurrent(m_Display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
@@ -87,6 +101,14 @@ public:
 
     const char* Name() const override { return "OpenGL ES 3"; }
 
+    void SetBloomIntensity(float i) override { m_Bloom.SetIntensity(i); }
+
+    unsigned long long GetSceneSnapshotID() override {
+        return (unsigned long long)(uintptr_t)m_Bloom.GetSnapshotTex();
+    }
+
+    void SetSnapshotFrozen(bool frozen) override { m_Bloom.SetSnapshotFrozen(frozen); }
+
 private:
     ANativeWindow* m_Window = nullptr;
     EGLDisplay m_Display = EGL_NO_DISPLAY;
@@ -94,6 +116,7 @@ private:
     EGLContext m_Context = EGL_NO_CONTEXT;
     int m_Width = 0;
     int m_Height = 0;
+    BloomGL m_Bloom;
 };
 
 } // namespace
